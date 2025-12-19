@@ -233,6 +233,12 @@ if __name__ == "__main__":
         default=0.01,
         help="Weight decay.",
     )
+    parser.add_argument(
+    "--resume_from_checkpoint",
+    type=str,
+    default=None,
+    help="Path to a checkpoint directory to resume training from.",
+)
 
     args = parser.parse_args()
 
