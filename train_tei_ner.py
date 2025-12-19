@@ -137,7 +137,9 @@ def main(
     training_args = transformers.TrainingArguments(
         output_dir=output_dir,
         eval_strategy="epoch",
-        save_strategy="epoch",
+        save_strategy="steps",
+        save_steps=1000,
+        save_total_limit=3
         logging_strategy="steps",
         logging_steps=50,
         learning_rate=learning_rate,
