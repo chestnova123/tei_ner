@@ -137,7 +137,7 @@ def main(
     training_args = transformers.TrainingArguments(
         output_dir=output_dir,
         eval_strategy="steps",
-        eval_steps=1000
+        eval_steps=1000,
         save_strategy="steps",
         save_steps=1000,
         save_total_limit=3,
