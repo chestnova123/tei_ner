@@ -150,7 +150,6 @@ def main(
         load_best_model_at_end=True,
         metric_for_best_model="f1",
         greater_is_better=True,
-        save_total_limit=3,
         bf16=True,
         report_to=[],  # set to ["wandb"] etc. if you want logging
     )
