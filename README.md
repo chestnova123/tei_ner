@@ -1,2 +1,2 @@
 # tei_ner
-training a model to do NER in tei files of the Semper Edition
+This repository contains the code relevant for training a model to do NER in tei files of the Semper Edition.
