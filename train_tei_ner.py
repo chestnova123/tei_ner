@@ -152,7 +152,8 @@ def main(
         metric_for_best_model="f1",
         greater_is_better=True,
         bf16=True,
-        report_to=[],  # set to ["wandb"] etc. if you want logging
+        disable_tqdm=True,
+        report_to=none,
     )
 
     trainer = Trainer(
