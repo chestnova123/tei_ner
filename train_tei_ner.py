@@ -142,7 +142,7 @@ def main(
         save_steps=1000,
         save_total_limit=3,
         logging_strategy="steps",
-        logging_steps=50,
+        logging_steps=1000,
         learning_rate=learning_rate,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size * 2,
