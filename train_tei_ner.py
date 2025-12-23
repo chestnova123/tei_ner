@@ -192,20 +192,6 @@ def print_weights(class_weights, id2label, topk=999):
         print(f"{lab:<12s} {w:8.4f}")
 
 
-# ====================================================================
-# 2.2 Model config
-# ====================================================================
-
-from transformers import AutoConfig
-
-config = AutoConfig.from_pretrained(
-    model_name,
-    hidden_dropout_prob=0.05,
-    attention_probs_dropout_prob=0.05,
-)
-
-
-
 # =====================================================================
 # 3. Main training function
 # =====================================================================
@@ -259,6 +245,13 @@ def main(
 
     print(f"Loading tokenizer & model: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+    config = AutoConfig.from_pretrained(
+        model_name,
+        hidden_dropout_prob=0.05,
+        attention_probs_dropout_prob=0.05,
+    )
+
 
     model = AutoModelForTokenClassification.from_pretrained(
         model_name,
