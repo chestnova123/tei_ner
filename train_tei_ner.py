@@ -10,6 +10,7 @@ from transformers import (
     DataCollatorForTokenClassification,
     Trainer,
     EarlyStoppingCallback,
+    AutoConfig,
 )
 from seqeval.metrics import (
     precision_score,
@@ -190,6 +191,21 @@ def print_weights(class_weights, id2label, topk=999):
     for lab, w in rows_sorted[:topk]:
         print(f"{lab:<12s} {w:8.4f}")
 
+
+# ====================================================================
+# 2.2 Model config
+# ====================================================================
+
+from transformers import AutoConfig
+
+config = AutoConfig.from_pretrained(
+    model_name,
+    hidden_dropout_prob=0.05,
+    attention_probs_dropout_prob=0.05,
+)
+
+
+
 # =====================================================================
 # 3. Main training function
 # =====================================================================
@@ -246,6 +262,7 @@ def main(
 
     model = AutoModelForTokenClassification.from_pretrained(
         model_name,
+        config=config,
         num_labels=len(LABELS),
         id2label=id2label,
         label2id=label2id,
