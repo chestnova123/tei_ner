@@ -248,17 +248,14 @@ def main(
 
     config = AutoConfig.from_pretrained(
         model_name,
-        hidden_dropout_prob=0.05,
-        attention_probs_dropout_prob=0.05,
+        num_labels=len(LABELS),
+        id2label=id2label,
+        label2id=label2id,
     )
-
 
     model = AutoModelForTokenClassification.from_pretrained(
         model_name,
         config=config,
-        num_labels=len(LABELS),
-        id2label=id2label,
-        label2id=label2id,
     )
 
     data_collator = DataCollatorForTokenClassification(tokenizer=tokenizer)
