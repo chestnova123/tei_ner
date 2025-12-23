@@ -105,6 +105,17 @@ def compute_metrics(eval_pred):
     predictions, labels = eval_pred
     preds_list, labels_list = align_predictions(predictions, labels)
 
+    # DEBUG: inspect what seqeval is seeing
+    flat_gold = [t for seq in labels_list for t in seq]
+    flat_pred = [t for seq in preds_list for t in seq]
+    gold_counts = Counter(flat_gold)
+    pred_counts = Counter(flat_pred)
+
+    print("DEBUG gold top tags:", gold_counts.most_common(10))
+    print("DEBUG pred top tags:", pred_counts.most_common(10))
+    print("DEBUG #gold non-O:", sum(1 for t in flat_gold if t != "O"))
+    print("DEBUG #pred non-O:", sum(1 for t in flat_pred if t != "O"))
+    
     # Tell seqeval explicitly that we are using BILOU, in strict mode.
     precision = precision_score(labels_list, preds_list, mode="strict", scheme=BILOU)
     recall = recall_score(labels_list, preds_list, mode="strict", scheme=BILOU)
