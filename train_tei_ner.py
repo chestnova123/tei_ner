@@ -15,6 +15,7 @@ from seqeval.metrics import (
     precision_score,
     recall_score,
     f1_score,
+    classification_report,
 )
 from seqeval.scheme import BILOU
 import inspect
@@ -76,6 +77,27 @@ def align_predictions(predictions, label_ids):
 
     return out_pred_list, out_label_list
 
+def per_type_scores(labels_list, preds_list):
+    """
+    Returns dict with per-type precision/recall/f1 from seqeval classification_report.
+    Uses BILOU strict mode.
+    """
+    rep = classification_report(
+        labels_list,
+        preds_list,
+        mode="strict",
+        scheme=BILOU,
+        output_dict=True,
+        zero_division=0,
+    )
+
+    # rep keys are entity type names (e.g. "PERSON") plus averages
+    out = {}
+    for t in TYPES:
+        if t in rep:
+            out[f"recall_{t}"] = rep[t]["recall"]
+            out[f"f1_{t}"] = rep[t]["f1-score"]
+    return out
 
 def compute_metrics(eval_pred):
     predictions, labels = eval_pred
@@ -86,11 +108,9 @@ def compute_metrics(eval_pred):
     recall = recall_score(labels_list, preds_list, mode="strict", scheme=BILOU)
     f1 = f1_score(labels_list, preds_list, mode="strict", scheme=BILOU)
 
-    return {
-        "precision": precision,
-        "recall": recall,
-        "f1": f1,
-    }
+    out = {"precision": precision, "recall": recall, "f1": f1}
+    out.update(per_type_scores(labels_list, preds_list))
+    return out
 
 
 # =============================
@@ -163,6 +183,13 @@ class WeightedTokenTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
+def print_weights(class_weights, id2label, topk=999):
+    rows = [(id2label[i], float(w)) for i, w in enumerate(class_weights)]
+    rows_sorted = sorted(rows, key=lambda x: x[1], reverse=True)
+    print("\nClass weights (sorted high→low):")
+    for lab, w in rows_sorted[:topk]:
+        print(f"{lab:<12s} {w:8.4f}")
+
 # =====================================================================
 # 3. Main training function
 # =====================================================================
@@ -206,15 +233,13 @@ def main(
     )
 
     # Downweight "O" a bit so the model doesn't learn to spam O.
-    o_id = label2id["O"]
-    class_weights[o_id] *= 0.5
+    O_WEIGHT = 0.5   # try 0.7, 0.5, 0.3
+    class_weights[label2id["O"]] = class_weights[label2id["O"]] * O_WEIGHT
 
     # Optional: clamp to avoid extreme weights
     class_weights = torch.clamp(class_weights, min=0.1, max=10.0)
 
-    print("Class weights:")
-    for i, w in enumerate(class_weights):
-        print(f"{id2label[i]:<12s} {w.item():.3f}")
+    print_weights(class_weights, id2label)
 
     print(f"Loading tokenizer & model: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
