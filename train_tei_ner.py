@@ -24,6 +24,7 @@ import torch
 from torch.nn import CrossEntropyLoss
 from collections import Counter
 import math
+import torch.nn.functional as F
 
 
 # =====================================================================
@@ -162,28 +163,67 @@ def make_class_weights(label2id, counts, scheme="sqrt_inv", smoothing=1.0):
     return weights
 
 class WeightedTokenTrainer(Trainer):
-    def __init__(self, class_weights=None, *args, **kwargs):
+    def __init__(self, class_weights=None, label_smoothing=0.0, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.class_weights = class_weights  # torch tensor on CPU for now
+        self.class_weights = class_weights  # torch tensor
+        self.label_smoothing = float(label_smoothing)
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
-        labels = inputs.get("labels")
+        labels = inputs.get("labels")  # [B, T]
         outputs = model(**inputs)
-        logits = outputs.get("logits")
+        logits = outputs.get("logits")  # [B, T, C]
 
-        # Move weights to the right device lazily
+        # Flatten
+        B, T, C = logits.shape
+        logits = logits.view(-1, C)          # [B*T, C]
+        labels = labels.view(-1)             # [B*T]
+
+        # Mask out ignored labels (-100)
+        mask = labels != -100
+        logits = logits[mask]
+        labels = labels[mask]
+
+        # If everything is masked (edge case)
+        if labels.numel() == 0:
+            loss = logits.sum() * 0.0
+            return (loss, outputs) if return_outputs else loss
+
+        # Log-probs for KL / smoothed CE
+        log_probs = F.log_softmax(logits, dim=-1)  # [N, C]
+
+        # Class weights
         if self.class_weights is not None:
-            weight = self.class_weights.to(logits.device)
-            loss_fct = CrossEntropyLoss(weight=weight, ignore_index=-100)
+            weight = self.class_weights.to(logits.device)  # [C]
         else:
-            loss_fct = CrossEntropyLoss(ignore_index=-100)
+            weight = None
 
-        # logits: [batch, seq, num_labels] -> [batch*seq, num_labels]
-        loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+        eps = self.label_smoothing
+
+        if eps > 0.0:
+            # Smoothed NLL:
+            # loss = (1-eps)*NLL + eps*uniform_loss (excluding correct class is common;
+            # uniform over all classes is also fine. We'll do uniform over all classes.)
+            nll = F.nll_loss(log_probs, labels, reduction="none")  # [N]
+            smooth = -log_probs.mean(dim=-1)                      # [N]  mean over classes
+
+            loss_per_token = (1.0 - eps) * nll + eps * smooth     # [N]
+
+            # Apply class weights to tokens by gold label (common practical choice)
+            if weight is not None:
+                loss_per_token = loss_per_token * weight[labels]
+
+            loss = loss_per_token.mean()
+        else:
+            # Standard weighted CE
+            loss = F.cross_entropy(
+                logits,
+                labels,
+                weight=weight,
+                reduction="mean",
+            )
 
         return (loss, outputs) if return_outputs else loss
-
-
+        
 def print_weights(class_weights, id2label, topk=999):
     rows = [(id2label[i], float(w)) for i, w in enumerate(class_weights)]
     rows_sorted = sorted(rows, key=lambda x: x[1], reverse=True)
@@ -285,12 +325,11 @@ def main(
         greater_is_better=True,
 
         bf16=True,
-        disable_tqdm=True,
+        disable_tqdm=False,
         report_to="none",
 
         warmup_ratio=0.1,
         lr_scheduler_type="linear",
-        label_smoothing_factor=0.05,
     )
 
     trainer = WeightedTokenTrainer(
@@ -302,6 +341,7 @@ def main(
         data_collator=data_collator,
         compute_metrics=compute_metrics,
         class_weights=class_weights,
+        label_smoothing=0.05,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
     )
 
