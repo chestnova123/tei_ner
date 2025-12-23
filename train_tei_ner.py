@@ -9,6 +9,7 @@ from transformers import (
     AutoModelForTokenClassification,
     DataCollatorForTokenClassification,
     Trainer,
+    EarlyStoppingCallback,
 )
 from seqeval.metrics import (
     precision_score,
@@ -17,6 +18,10 @@ from seqeval.metrics import (
 )
 from seqeval.scheme import BILOU
 import inspect
+import torch
+from torch.nn import CrossEntropyLoss
+from collections import Counter
+import math
 
 
 # =====================================================================
@@ -88,6 +93,76 @@ def compute_metrics(eval_pred):
     }
 
 
+# =============================
+# 2.1 Weighted labels
+# ==============================
+
+def compute_label_counts(train_dataset):
+    counts = Counter()
+    for labels in train_dataset["labels"]:
+        for lab in labels:
+            if lab != -100:
+                counts[int(lab)] += 1
+    return counts
+    
+def make_class_weights(label2id, counts, scheme="sqrt_inv", smoothing=1.0):
+    """
+    Returns torch.FloatTensor of shape [num_labels]
+    - scheme:
+        "inv"      : w = 1 / (count + smoothing)
+        "sqrt_inv" : w = 1 / sqrt(count + smoothing)
+        "log_inv"  : w = 1 / log(count + c)  (very gentle)
+    """
+    num_labels = len(label2id)
+    weights = torch.ones(num_labels, dtype=torch.float)
+
+    for lab_id in range(num_labels):
+        c = counts.get(lab_id, 0)
+        if c == 0:
+            # if a label never appears, don't blow up the weight
+            weights[lab_id] = 0.0
+            continue
+
+        if scheme == "inv":
+            weights[lab_id] = 1.0 / (c + smoothing)
+        elif scheme == "sqrt_inv":
+            weights[lab_id] = 1.0 / math.sqrt(c + smoothing)
+        elif scheme == "log_inv":
+            # c must be >= 1 here
+            weights[lab_id] = 1.0 / math.log(c + 10.0)
+        else:
+            raise ValueError(f"Unknown scheme: {scheme}")
+
+    # Normalize weights
+    nonzero = weights[weights > 0]
+    if len(nonzero) > 0:
+        weights = weights / nonzero.mean()
+
+    return weights
+
+class WeightedTokenTrainer(Trainer):
+    def __init__(self, class_weights=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.class_weights = class_weights  # torch tensor on CPU for now
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        labels = inputs.get("labels")
+        outputs = model(**inputs)
+        logits = outputs.get("logits")
+
+        # Move weights to the right device lazily
+        if self.class_weights is not None:
+            weight = self.class_weights.to(logits.device)
+            loss_fct = CrossEntropyLoss(weight=weight, ignore_index=-100)
+        else:
+            loss_fct = CrossEntropyLoss(ignore_index=-100)
+
+        # logits: [batch, seq, num_labels] -> [batch*seq, num_labels]
+        loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+
+        return (loss, outputs) if return_outputs else loss
+
+
 # =====================================================================
 # 3. Main training function
 # =====================================================================
@@ -97,10 +172,11 @@ def main(
     dataset_path: str,
     model_name: str,
     output_dir: str,
-    num_train_epochs: int = 5,
-    batch_size: int = 8,
-    learning_rate: float = 5e-5,
-    weight_decay: float = 0.01,
+    num_train_epochs: int,
+    batch_size: int,
+    learning_rate: float,
+    weight_decay: float,
+    resume_from_checkpoint: str | None = None,
 ):
     dataset_path = str(Path(dataset_path).expanduser().resolve())
     output_dir = str(Path(output_dir).expanduser().resolve())
@@ -117,6 +193,29 @@ def main(
     if test_dataset is not None:
         print(f"Test examples: {len(test_dataset)}")
 
+    # -----------------------------
+    # Compute class weights
+    # -----------------------------
+    counts = compute_label_counts(train_dataset)
+
+    class_weights = make_class_weights(
+        label2id,
+        counts,
+        scheme="sqrt_inv",
+        smoothing=1.0,
+    )
+
+    # Downweight "O" a bit so the model doesn't learn to spam O.
+    o_id = label2id["O"]
+    class_weights[o_id] *= 0.5
+
+    # Optional: clamp to avoid extreme weights
+    class_weights = torch.clamp(class_weights, min=0.1, max=10.0)
+
+    print("Class weights:")
+    for i, w in enumerate(class_weights):
+        print(f"{id2label[i]:<12s} {w.item():.3f}")
+
     print(f"Loading tokenizer & model: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -129,34 +228,40 @@ def main(
 
     data_collator = DataCollatorForTokenClassification(tokenizer=tokenizer)
 
-    print("Transformers version:", transformers.__version__)
-    print("TrainingArguments class:", transformers.TrainingArguments)
-    print("TrainingArguments module:", transformers.TrainingArguments.__module__)
-    print("Signature:", inspect.signature(transformers.TrainingArguments.__init__))
-
     training_args = transformers.TrainingArguments(
         output_dir=output_dir,
+
         eval_strategy="steps",
         eval_steps=1000,
         save_strategy="steps",
         save_steps=1000,
         save_total_limit=3,
+
         logging_strategy="steps",
         logging_steps=1000,
+
         learning_rate=learning_rate,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size * 2,
+        gradient_accumulation_steps=2,
+
         num_train_epochs=num_train_epochs,
         weight_decay=weight_decay,
+
         load_best_model_at_end=True,
         metric_for_best_model="f1",
         greater_is_better=True,
+
         bf16=True,
         disable_tqdm=True,
         report_to="none",
+
+        warmup_ratio=0.1,
+        lr_scheduler_type="linear",
+        label_smoothing_factor=0.05,
     )
 
-    trainer = Trainer(
+    trainer = WeightedTokenTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
@@ -164,10 +269,12 @@ def main(
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
+        class_weights=class_weights,
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
     )
 
     # ----------- Train -----------
-    trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
     # ----------- Evaluate -----------
     print("Evaluating on validation set...")
@@ -183,8 +290,6 @@ def main(
     print(f"Saving model and tokenizer to: {output_dir}")
     trainer.save_model(output_dir)
     tokenizer.save_pretrained(output_dir)
-
-
 # =====================================================================
 # 4. CLI
 # =====================================================================
@@ -252,4 +357,5 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         learning_rate=args.lr,
         weight_decay=args.weight_decay,
+        resume_from_checkpoint=args.resume_from_checkpoint,
     )
