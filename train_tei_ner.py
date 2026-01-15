@@ -353,8 +353,8 @@ def main(
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
-        class_weights=class_weights,
-        label_smoothing=0.05,
+        class_weights=None,
+        label_smoothing=0,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
     )
 
