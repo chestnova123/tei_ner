@@ -286,11 +286,11 @@ def main(
     )
 
     # Downweight "O" a bit so the model doesn't learn to spam O.
-    O_WEIGHT = 0.5   # try 0.7, 0.5, 0.3
-    class_weights[label2id["O"]] = class_weights[label2id["O"]] * O_WEIGHT
+    O_WEIGHT = 0.7   # try 0.7, 0.5, 0.3
+    class_weights[label2id["O"]] *= O_WEIGHT
 
     # Optional: clamp to avoid extreme weights
-    class_weights = torch.clamp(class_weights, min=0.1, max=10.0)
+    class_weights = torch.clamp(class_weights, min=0.02, max=5.0)
 
     print_weights(class_weights, id2label)
 
@@ -317,17 +317,17 @@ def main(
         output_dir=output_dir,
 
         eval_strategy="steps",
-        eval_steps=1000,
+        eval_steps=8000,
         save_strategy="steps",
-        save_steps=1000,
-        save_total_limit=3,
+        save_steps=8000,
+        save_total_limit=2,
 
         logging_strategy="steps",
         logging_steps=1000,
 
         learning_rate=learning_rate,
         per_device_train_batch_size=batch_size,
-        per_device_eval_batch_size=batch_size * 2,
+        per_device_eval_batch_size=batch_size,
         gradient_accumulation_steps=2,
 
         num_train_epochs=num_train_epochs,
