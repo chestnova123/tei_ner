@@ -25,6 +25,7 @@ from torch.nn import CrossEntropyLoss
 from collections import Counter
 import math
 import torch.nn.functional as F
+from transformers.optimization import AdamW 
 
 
 # =====================================================================
@@ -174,10 +175,26 @@ def make_class_weights(label2id, counts, scheme="sqrt_inv", smoothing=1.0):
     return weights
 
 class WeightedTokenTrainer(Trainer):
-    def __init__(self, class_weights=None, label_smoothing=0.0, *args, **kwargs):
+    def __init__(
+        self,
+        class_weights=None,
+        label_smoothing=0.0,
+        llrd=False,
+        layer_decay=0.9,
+        head_lr_mult=5.0,
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
-        self.class_weights = class_weights  # torch tensor
+        self.class_weights = class_weights  # torch tensor [num_labels]
         self.label_smoothing = float(label_smoothing)
+
+        # LLRD controls
+        self.llrd = bool(llrd)
+        self.layer_decay = float(layer_decay)
+        self.head_lr_mult = float(head_lr_mult)
+
+        self._printed_weights_debug = False
 
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         labels = inputs.get("labels")  # [B, T]
@@ -186,8 +203,8 @@ class WeightedTokenTrainer(Trainer):
 
         # Flatten
         B, T, C = logits.shape
-        logits = logits.view(-1, C)          # [B*T, C]
-        labels = labels.view(-1)             # [B*T]
+        logits = logits.view(-1, C)  # [B*T, C]
+        labels = labels.view(-1)     # [B*T]
 
         # Mask out ignored labels (-100)
         mask = labels != -100
@@ -203,38 +220,55 @@ class WeightedTokenTrainer(Trainer):
         log_probs = F.log_softmax(logits, dim=-1)  # [N, C]
 
         # Class weights
-        if self.class_weights is not None:
-            weight = self.class_weights.to(logits.device)  # [C]
-        else:
-            weight = None
-
+        weight = self.class_weights.to(logits.device) if self.class_weights is not None else None
         eps = self.label_smoothing
 
         if eps > 0.0:
-            # Smoothed NLL:
-            # loss = (1-eps)*NLL + eps*uniform_loss (excluding correct class is common;
-            # uniform over all classes is also fine. We'll do uniform over all classes.)
             nll = F.nll_loss(log_probs, labels, reduction="none")  # [N]
-            smooth = -log_probs.mean(dim=-1)                      # [N]  mean over classes
+            smooth = -log_probs.mean(dim=-1)                      # [N]
+            loss_per_token = (1.0 - eps) * nll + eps * smooth
 
-            loss_per_token = (1.0 - eps) * nll + eps * smooth     # [N]
-
-            # Apply class weights to tokens by gold label (common practical choice)
+            # Apply class weights to tokens by gold label
             if weight is not None:
                 loss_per_token = loss_per_token * weight[labels]
 
             loss = loss_per_token.mean()
         else:
-            # Standard weighted CE
             loss = F.cross_entropy(
                 logits,
                 labels,
                 weight=weight,
                 reduction="mean",
             )
-        if self.class_weights is not None and self.state.global_step == 0:
+
+        if (self.class_weights is not None) and (not self._printed_weights_debug):
             print("DEBUG: class weights enabled")
+            self._printed_weights_debug = True
+
         return (loss, outputs) if return_outputs else loss
+
+    def create_optimizer(self):
+        # If Trainer already made one, reuse it
+        if self.optimizer is not None:
+            return self.optimizer
+
+        if self.llrd:
+            param_groups = build_llrd_param_groups(
+                model=self.model,
+                base_lr=self.args.learning_rate,
+                weight_decay=self.args.weight_decay,
+                layer_decay=self.layer_decay,
+                head_lr_mult=self.head_lr_mult,
+            )
+            self.optimizer = torch.optim.AdamW(
+                param_groups,
+                betas=(self.args.adam_beta1, self.args.adam_beta2),
+                eps=self.args.adam_epsilon,
+            )
+        else:
+            self.optimizer = super().create_optimizer()
+
+        return self.optimizer
         
 def print_weights(class_weights, id2label, topk=999):
     rows = [(id2label[i], float(w)) for i, w in enumerate(class_weights)]
@@ -242,6 +276,97 @@ def print_weights(class_weights, id2label, topk=999):
     print("\nClass weights (sorted high→low):")
     for lab, w in rows_sorted[:topk]:
         print(f"{lab:<12s} {w:8.4f}")
+
+# layer learning rate decay
+
+def build_llrd_param_groups(
+    model,
+    base_lr: float,
+    weight_decay: float,
+    layer_decay: float = 0.9,
+    head_lr_mult: float = 5.0,
+):
+    """
+    Build AdamW param groups with layer-wise LR decay (LLRD).
+    - base_lr: LR for the *top* transformer layer (not the head)
+    - layer_decay: multiply LR by this as you go down layers (0.8–0.95 typical)
+    - head_lr_mult: classifier head LR = base_lr * head_lr_mult
+
+    Works for BERT/RoBERTa-like models with .encoder.layer
+    """
+    no_decay = ("bias", "LayerNorm.weight", "layer_norm.weight")
+
+    # Get the base transformer (e.g., model.bert / model.roberta)
+    base = getattr(model, model.base_model_prefix, None)
+    if base is None:
+        raise ValueError(f"Model has no base_model_prefix. Got: {getattr(model, 'base_model_prefix', None)}")
+    base_model = getattr(model, base)
+
+    # Find encoder layers
+    if not hasattr(base_model, "encoder") or not hasattr(base_model.encoder, "layer"):
+        raise ValueError("This LLRD helper expects a model with base_model.encoder.layer (BERT/RoBERTa style).")
+
+    layers = base_model.encoder.layer
+    n_layers = len(layers)
+
+    # We'll create param groups:
+    # - embeddings (treated as layer 0)
+    # - each encoder layer i
+    # - head/classifier
+    param_groups = []
+
+    def add_group(params, lr, wd):
+        if params:
+            param_groups.append({"params": params, "lr": lr, "weight_decay": wd})
+
+    # 1) Embeddings group (lowest LR)
+    emb_lr = base_lr * (layer_decay ** n_layers)
+    emb_decay, emb_nodecay = [], []
+    for n, p in base_model.embeddings.named_parameters():
+        if not p.requires_grad:
+            continue
+        if any(nd in n for nd in no_decay):
+            emb_nodecay.append(p)
+        else:
+            emb_decay.append(p)
+    add_group(emb_decay, emb_lr, weight_decay)
+    add_group(emb_nodecay, emb_lr, 0.0)
+
+    # 2) Encoder layers: lower layers smaller LR, top layer ~ base_lr
+    for layer_idx in range(n_layers):
+        layer_lr = base_lr * (layer_decay ** (n_layers - 1 - layer_idx))
+        layer_decay_params, layer_nodecay_params = [], []
+        for n, p in layers[layer_idx].named_parameters():
+            if not p.requires_grad:
+                continue
+            if any(nd in n for nd in no_decay):
+                layer_nodecay_params.append(p)
+            else:
+                layer_decay_params.append(p)
+        add_group(layer_decay_params, layer_lr, weight_decay)
+        add_group(layer_nodecay_params, layer_lr, 0.0)
+
+    # 3) Head / classifier (highest LR)
+    head_lr = base_lr * head_lr_mult
+
+    # For token classification, common head module names include "classifier"
+    # But to be safe, collect params not in base_model
+    base_param_ids = {id(p) for p in base_model.parameters()}
+    head_decay, head_nodecay = [], []
+    for n, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if id(p) in base_param_ids:
+            continue
+        if any(nd in n for nd in no_decay):
+            head_nodecay.append(p)
+        else:
+            head_decay.append(p)
+
+    add_group(head_decay, head_lr, weight_decay)
+    add_group(head_nodecay, head_lr, 0.0)
+
+    return param_groups
 
 
 # =====================================================================
@@ -351,7 +476,7 @@ def main(
         disable_tqdm=False,
         report_to="none",
 
-        warmup_ratio=0.05,
+        warmup_ratio=0.1,
         lr_scheduler_type="cosine",
         group_by_length=True,
         length_column_name="length",
@@ -368,6 +493,9 @@ def main(
         compute_metrics=compute_metrics,
         class_weights=class_weights,
         label_smoothing=0,
+        llrd=True,
+        layer_decay=0.9,
+        head_lr_mult=5.0,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
     )
 
