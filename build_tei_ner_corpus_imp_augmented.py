@@ -9,18 +9,21 @@ from lxml.etree import XMLSyntaxError
 
 from transformers import AutoTokenizer
 from datasets import Dataset, DatasetDict
+from collections import Counter
 
-# version 2.0. Adapts the extraction process to keep structural information in the extracting text by marking edits.
+# version 3.0. augments data by extracting two versions of every paragraph, one with contents of the del tags and one without
 
 # ============================================================
 # 1. Global config
 # ============================================================
 
+SKIPPED_RS_TYPES = Counter()
+
 MODEL_NAME = "bert-base-german-cased"  # or another HF model
 MAX_LENGTH = 512  # truncation length
 RANDOM_SEED = 42
 
-MARK_DEL = True 
+MARK_DEL = True
 MARK_ADD = True
 MARK_HANDSHIFT = True
 MARK_HI = True
@@ -159,7 +162,15 @@ def sanitize_xml_text(xml_text, entity_map):
 from lxml import etree
 
 
-def normalize_paragraph(p_elem):
+def normalize_paragraph(
+    p_elem,
+    *,
+    mark_del=True,
+    mark_add=True,
+    mark_handshift=True,
+    mark_hi=True,
+    keep_del_content=True,
+):
     text_chars, char_map = [], []
 
     def append_char(ch, node, kind, offset):
@@ -167,9 +178,7 @@ def normalize_paragraph(p_elem):
         char_map.append((node, kind, offset))
 
     def append_literal(s, node, kind):
-        # literal markers: they don’t correspond to an XML char offset,
-        # but we still need them in the text stream.
-        # Use offset=-1 so they can’t be confused with real node text offsets.
+        # literal markers: no real XML offsets => use negative offsets
         for k, ch in enumerate(s):
             append_char(ch, node, kind, -1 - k)
 
@@ -196,38 +205,39 @@ def normalize_paragraph(p_elem):
                     append_char(" ", child, "lb", 0)
 
             elif tag == "metamark":
-                # usually safest to skip
                 pass
 
             elif tag == "del":
-                if MARK_DEL:
+                # Version A: optionally mark, and optionally keep deleted content
+                if mark_del:
                     append_literal(DEL_START, child, "marker")
-                recurse(child)  # keep the deleted text
-                if MARK_DEL:
+                if keep_del_content:
+                    recurse(child)  # keep deleted text
+                # else: skip recursion => deletion content removed
+                if mark_del:
                     append_literal(DEL_END, child, "marker")
 
             elif tag == "add":
-                if MARK_ADD:
+                if mark_add:
                     append_literal(ADD_START, child, "marker")
                 recurse(child)
-                if MARK_ADD:
+                if mark_add:
                     append_literal(ADD_END, child, "marker")
 
             elif tag == "handShift":
-                if MARK_HANDSHIFT:
+                if mark_handshift:
                     scr = (child.get("script") or "").lower()
                     if "latein" in scr or "latin" in scr:
                         append_literal(LAT_MARK, child, "marker")
                     elif "kurrent" in scr:
                         append_literal(KUR_MARK, child, "marker")
-                # handShift often has no useful text; still recurse in case it does
                 recurse(child)
 
             elif tag == "hi":
-                if MARK_HI:
+                if mark_hi:
                     append_literal(HI_START, child, "marker")
                 recurse(child)
-                if MARK_HI:
+                if mark_hi:
                     append_literal(HI_END, child, "marker")
 
             else:
@@ -239,6 +249,7 @@ def normalize_paragraph(p_elem):
 
     recurse(p_elem)
     return "".join(text_chars), char_map
+
 
 def build_inverse_char_map(char_map):
     """
@@ -259,6 +270,10 @@ def map_rs_type_to_label(rs_type):
     """
     Map TEI rs/@type to NER label types (without BILOU prefix).
     """
+    if not rs_type:
+        SKIPPED_RS_TYPES["<EMPTY>"] += 1
+        return None
+    
     mapping = {
         "person": "PERSON",
         "people": "PEOPLE",
@@ -271,7 +286,7 @@ def map_rs_type_to_label(rs_type):
         "concept": "CONCEPT",
         "term": "CONCEPT",
     }
-    # Unknown or unlisted types fall back to OTHER
+    
     return mapping.get(rs_type)
 
 
@@ -325,12 +340,13 @@ def extract_entities_from_paragraph(p_elem, text, char_map):
     for rs in p_elem.xpath(".//tei:rs", namespaces=TEI_NS):
         rs_type = rs.get("type")
         label = map_rs_type_to_label(rs_type)
+        if label is None:
+            SKIPPED_RS_TYPES[rs_type] += 1
         start, end = get_span_for_rs(rs, idx_map)
         if label is None:
             continue
         if start is not None and end is not None and start < end:
             entities.append({"start": start, "end": end, "label": label})
-
     entities.sort(key=lambda e: e["start"])
     return entities
 
@@ -453,30 +469,57 @@ def process_document(xml_path, doc_id):
     p_elems = root.xpath("//*[local-name()='p' and not(ancestor::*[local-name()='teiHeader'])]")
 
     for p_idx, p_elem in enumerate(p_elems):
-        text, char_map = normalize_paragraph(p_elem)
-        if not text.strip():
-            continue
 
-        entities = extract_entities_from_paragraph(p_elem, text, char_map)
-        encoding = spans_to_bilou_labels(
-            text,
-            entities,
-            tokenizer,
-            label2id,
-            max_length=MAX_LENGTH,
-        )
+        variants = [
+            # Version A: mark boundaries + keep deletions
+            {
+                "variant": "marked_keep_del",
+                "norm_kwargs": dict(
+                    mark_del=MARK_DEL,
+                    mark_add=MARK_ADD,
+                    mark_handshift=MARK_HANDSHIFT,
+                    mark_hi=MARK_HI,
+                    keep_del_content=True,
+                ),
+            },
+            # Version B: plain text + drop deletions + no markers
+            {
+                "variant": "plain_drop_del",
+                "norm_kwargs": dict(
+                    mark_del=False,
+                    mark_add=False,
+                    mark_handshift=False,
+                    mark_hi=False,
+                    keep_del_content=False,
+                ),
+            },
+        ]
 
-        example = {
-            "text": text,
-            "entities": entities,
-            "doc_id": doc_id,
-            "p_index": p_idx,
-            "input_ids": encoding["input_ids"],
-            "attention_mask": encoding["attention_mask"],
-            "labels": encoding["labels"],
-        }
-        examples.append(example)
+        for v in variants:
+            text, char_map = normalize_paragraph(p_elem, **v["norm_kwargs"])
+            if not text.strip():
+                continue
 
+            entities = extract_entities_from_paragraph(p_elem, text, char_map)
+            encoding = spans_to_bilou_labels(
+                text,
+                entities,
+                tokenizer,
+                label2id,
+                max_length=MAX_LENGTH,
+            )
+
+            example = {
+                "text": text,
+                "entities": entities,
+                "doc_id": doc_id,
+                "p_index": p_idx,
+                "variant": v["variant"],  # <--- add this so you can debug/filter
+                "input_ids": encoding["input_ids"],
+                "attention_mask": encoding["attention_mask"],
+                "labels": encoding["labels"],
+            }
+            examples.append(example)
     return examples
 
 
@@ -540,6 +583,7 @@ def examples_to_dataset(examples):
         "entities": [ex["entities"] for ex in examples],
         "doc_id": [ex["doc_id"] for ex in examples],
         "p_index": [ex["p_index"] for ex in examples],
+        "variant": [ex.get("variant") for ex in examples],
         "input_ids": [ex["input_ids"] for ex in examples],
         "attention_mask": [ex["attention_mask"] for ex in examples],
         "labels": [ex["labels"] for ex in examples],
@@ -614,3 +658,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     build_and_save_corpus(args.root_dir, args.out_dir)
+    print("Top skipped rs/@type values:")
+    for k, v in SKIPPED_RS_TYPES.most_common(25):
+        print(f"{k:20s} {v}")
