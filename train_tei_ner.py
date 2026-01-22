@@ -295,15 +295,20 @@ def build_llrd_param_groups(
     """
     no_decay = ("bias", "LayerNorm.weight", "layer_norm.weight")
 
-    # Get the base transformer (e.g., model.bert / model.roberta)
-    base = getattr(model, model.base_model_prefix, None)
-    if base is None:
-        raise ValueError(f"Model has no base_model_prefix. Got: {getattr(model, 'base_model_prefix', None)}")
-    base_model = getattr(model, base)
+    
+    # Correct: base_model_prefix is a STRING like "bert"
+    base_prefix = getattr(model, "base_model_prefix", None)
+    if not isinstance(base_prefix, str) or not base_prefix:
+        raise ValueError(f"Unexpected base_model_prefix: {base_prefix!r}")
 
-    # Find encoder layers
+    # Correct: model.bert (or model.roberta, etc.) is the base transformer
+    base_model = getattr(model, base_prefix, None)
+    if base_model is None:
+        raise ValueError(f"Model has base_model_prefix={base_prefix!r} but no attribute model.{base_prefix}")
+
+    # BERT encoder layers live here
     if not hasattr(base_model, "encoder") or not hasattr(base_model.encoder, "layer"):
-        raise ValueError("This LLRD helper expects a model with base_model.encoder.layer (BERT/RoBERTa style).")
+        raise ValueError("Expected base_model.encoder.layer (BERT/RoBERTa style).")
 
     layers = base_model.encoder.layer
     n_layers = len(layers)
