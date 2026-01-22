@@ -25,6 +25,7 @@ from torch.nn import CrossEntropyLoss
 from collections import Counter
 import math
 import torch.nn.functional as F
+import re
 
 
 # =====================================================================
@@ -138,7 +139,7 @@ def compute_label_counts(train_dataset):
                 counts[int(lab)] += 1
     return counts
     
-def make_class_weights(label2id, counts, scheme="sqrt_inv", smoothing=1.0):
+def make_class_weights(label2id, counts, scheme="log_inv", smoothing=1.0):
     """
     Returns torch.FloatTensor of shape [num_labels]
     - scheme:
@@ -170,6 +171,110 @@ def make_class_weights(label2id, counts, scheme="sqrt_inv", smoothing=1.0):
     nonzero = weights[weights > 0]
     if len(nonzero) > 0:
         weights = weights / nonzero.mean()
+
+    return weights
+
+
+def tag_to_type(label: str):
+    """
+    Map a label like 'B-PERSON' or 'U-ORG' to its TYPE (e.g. 'PERSON', 'ORG').
+    Returns None for 'O' or anything unexpected.
+    """
+    if label == "O":
+        return None
+    # Expect format X-TYPE where X in {B,I,L,U}
+    m = re.match(r"^[BILU]-(.+)$", label)
+    if not m:
+        return None
+    return m.group(1)
+
+
+def compute_type_counts(train_dataset, id2label):
+    """
+    Count tokens per TYPE from train_dataset['labels'] ignoring -100.
+    Returns Counter like {'PERSON': 1234, 'ORG': 567, ...}
+    """
+    counts = Counter()
+    for labs in train_dataset["labels"]:
+        for lab_id in labs:
+            if lab_id == -100:
+                continue
+            lab = id2label[int(lab_id)]
+            t = tag_to_type(lab)
+            if t is not None:
+                counts[t] += 1
+    return counts
+
+
+def make_type_level_class_weights(
+    label2id,
+    id2label,
+    train_dataset,
+    scheme="sqrt_inv",
+    smoothing=1.0,
+    o_weight=0.9,
+    min_w=0.2,
+    max_w=3.0,
+):
+    """
+    Create per-label weights where all B/I/L/U tags of a TYPE share the same weight.
+
+    scheme:
+      - "inv":      w_type = 1/(count + smoothing)
+      - "sqrt_inv": w_type = 1/sqrt(count + smoothing)
+      - "log_inv":  w_type = 1/log(count + 10)  (gentle)
+
+    o_weight:
+      Multiplicative factor applied to O after normalization (keep near 1.0 to avoid entity spam)
+
+    min_w/max_w:
+      Clamp weights to avoid extremes.
+    """
+    type_counts = compute_type_counts(train_dataset, id2label)
+
+    # Compute raw weights per TYPE
+    type_weight = {}
+    for t, c in type_counts.items():
+        if c <= 0:
+            continue
+        if scheme == "inv":
+            w = 1.0 / (c + smoothing)
+        elif scheme == "sqrt_inv":
+            w = 1.0 / math.sqrt(c + smoothing)
+        elif scheme == "log_inv":
+            w = 1.0 / math.log(c + 10.0)
+        else:
+            raise ValueError(f"Unknown scheme: {scheme}")
+        type_weight[t] = w
+
+    # Build per-label weights
+    num_labels = len(label2id)
+    weights = torch.ones(num_labels, dtype=torch.float)
+
+    # Set weights for entity tags based on their TYPE
+    for lab, lab_id in label2id.items():
+        if lab == "O":
+            continue
+        t = tag_to_type(lab)
+        if t is None:
+            continue
+        # If a type never appears, set to 0 to avoid nonsense gradients
+        if t not in type_weight:
+            weights[lab_id] = 0.0
+        else:
+            weights[lab_id] = float(type_weight[t])
+
+    # Normalize weights so mean of nonzero weights is 1.0
+    nonzero = weights[weights > 0]
+    if len(nonzero) > 0:
+        weights = weights / nonzero.mean()
+
+    # Apply O weight after normalization (keeps it interpretable)
+    if "O" in label2id:
+        weights[label2id["O"]] *= float(o_weight)
+
+    # Clamp to avoid extremes
+    weights = torch.clamp(weights, min=min_w, max=max_w)
 
     return weights
 
@@ -416,22 +521,19 @@ def main(
     # Compute class weights
     # -----------------------------
     counts = compute_label_counts(train_dataset)
-
-    class_weights = make_class_weights(
-        label2id,
-        counts,
-        scheme="sqrt_inv",
+    class_weights = make_type_level_class_weights(
+        label2id=label2id,
+        id2label=id2label,
+        train_dataset=train_dataset,
+        scheme="sqrt_inv",   # or "log_inv" for gentler
         smoothing=1.0,
-    )
-
-    # Downweight "O" a bit so the model doesn't learn to spam O.
-    O_WEIGHT = 0.5   # try 0.7, 0.5, 0.3
-    class_weights[label2id["O"]] *= O_WEIGHT
-
-    # Optional: clamp to avoid extreme weights
-    class_weights = torch.clamp(class_weights, min=0.02, max=3.0)
+        o_weight=0.9,        # IMPORTANT: keep closer to 1 to avoid entity spam
+        min_w=0.2,
+        max_w=3.0,
+        )
 
     print_weights(class_weights, id2label)
+
 
     print(f"Loading tokenizer & model: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -484,7 +586,6 @@ def main(
         lr_scheduler_type="cosine",
         group_by_length=True,
         length_column_name="length",
-        max_steps=2000
     )
 
     trainer = WeightedTokenTrainer(
@@ -496,7 +597,7 @@ def main(
         data_collator=data_collator,
         compute_metrics=compute_metrics,
         class_weights=class_weights,
-        label_smoothing=0,
+        label_smoothing=0.05,
         llrd=True,
         layer_decay=0.9,
         head_lr_mult=5.0,
