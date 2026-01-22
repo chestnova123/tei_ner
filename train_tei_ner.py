@@ -25,7 +25,6 @@ from torch.nn import CrossEntropyLoss
 from collections import Counter
 import math
 import torch.nn.functional as F
-from transformers.optimization import AdamW 
 
 
 # =====================================================================
