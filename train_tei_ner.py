@@ -296,11 +296,11 @@ def main(
     )
 
     # Downweight "O" a bit so the model doesn't learn to spam O.
-    O_WEIGHT = 0.7   # try 0.7, 0.5, 0.3
+    O_WEIGHT = 0.5   # try 0.7, 0.5, 0.3
     class_weights[label2id["O"]] *= O_WEIGHT
 
     # Optional: clamp to avoid extreme weights
-    class_weights = torch.clamp(class_weights, min=0.02, max=5.0)
+    class_weights = torch.clamp(class_weights, min=0.02, max=3.0)
 
     print_weights(class_weights, id2label)
 
