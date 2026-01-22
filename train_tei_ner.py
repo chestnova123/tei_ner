@@ -343,7 +343,7 @@ def main(
         report_to="none",
 
         warmup_ratio=0.05,
-        lr_scheduler_type="linear",
+        lr_scheduler_type="cosine",
         group_by_length=True,
         length_column_name="input_ids",
         max_steps=2000
