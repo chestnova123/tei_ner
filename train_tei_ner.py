@@ -232,7 +232,8 @@ class WeightedTokenTrainer(Trainer):
                 weight=weight,
                 reduction="mean",
             )
-
+        if self.class_weights is not None and self.state.global_step == 0:
+            print("DEBUG: class weights enabled")
         return (loss, outputs) if return_outputs else loss
         
 def print_weights(class_weights, id2label, topk=999):
@@ -317,13 +318,13 @@ def main(
         output_dir=output_dir,
 
         eval_strategy="steps",
-        eval_steps=8000,
+        eval_steps=200,
         save_strategy="steps",
-        save_steps=8000,
+        save_steps=200,
         save_total_limit=2,
 
         logging_strategy="steps",
-        logging_steps=1000,
+        logging_steps=50,
 
         learning_rate=learning_rate,
         per_device_train_batch_size=batch_size,
@@ -341,8 +342,11 @@ def main(
         disable_tqdm=False,
         report_to="none",
 
-        warmup_ratio=0.1,
+        warmup_ratio=0.05,
         lr_scheduler_type="linear",
+        group_by_length=True,
+        length_column_name="input_ids",
+        max_steps=2000
     )
 
     trainer = WeightedTokenTrainer(
@@ -353,7 +357,7 @@ def main(
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
-        class_weights=None,
+        class_weights=class_weights,
         label_smoothing=0,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
     )

@@ -19,7 +19,7 @@ from collections import Counter
 
 SKIPPED_RS_TYPES = Counter()
 
-MODEL_NAME = "bert-base-german-cased"  # or another HF model
+MODEL_NAME = "xlm-roberta-base"  # or another HF model
 MAX_LENGTH = 512  # truncation length
 RANDOM_SEED = 42
 
