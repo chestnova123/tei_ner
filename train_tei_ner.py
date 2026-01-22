@@ -268,6 +268,15 @@ def main(
     train_dataset = ds_dict["train"]
     eval_dataset = ds_dict["validation"]
     test_dataset = ds_dict.get("test", None)
+    
+    def add_length_column(ds, input_key="input_ids"):
+        return ds.map(lambda x: {"length": len(x[input_key])})
+
+    train_dataset = add_length_column(train_dataset)
+    eval_dataset  = add_length_column(eval_dataset)
+    if test_dataset is not None:
+        test_dataset = add_length_column(test_dataset)
+
 
     print(f"Train examples: {len(train_dataset)}")
     print(f"Validation examples: {len(eval_dataset)}")
@@ -345,7 +354,7 @@ def main(
         warmup_ratio=0.05,
         lr_scheduler_type="cosine",
         group_by_length=True,
-        length_column_name="input_ids",
+        length_column_name="length",
         max_steps=2000
     )
 
