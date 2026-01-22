@@ -184,8 +184,7 @@ def tag_to_type(label: str):
         return None
     # Expect format X-TYPE where X in {B,I,L,U}
     m = re.match(r"^[BILU]-(.+)$", label)
-    if not m:
-        return None
+    
     return m.group(1)
 
 
@@ -204,7 +203,56 @@ def compute_type_counts(train_dataset, id2label):
             if t is not None:
                 counts[t] += 1
     return counts
+def make_type_level_class_weights_balanced(
+    label2id,
+    id2label,
+    train_dataset,
+    alpha: float = 0.5,     # 0.5 = sqrt, 1.0 = full ratio
+    o_weight: float = 0.9,  # keep O slightly down or ~1.0
+    min_w: float = 0.5,     # IMPORTANT: don’t allow entities to get tiny
+    max_w: float = 3.0,
+):
+    """
+    Weight each entity TYPE by (median_count / count)**alpha.
+    Assign that weight to all B/I/L/U tags of the TYPE.
+    Keep O around ~1 (optionally slightly downweighted).
+    """
+    type_counts = compute_type_counts(train_dataset, id2label)
+    if len(type_counts) == 0:
+        raise ValueError("No entity labels found (type_counts empty).")
 
+    counts = np.array(list(type_counts.values()), dtype=np.float64)
+    median_c = float(np.median(counts))
+
+    # type -> weight
+    type_weight = {}
+    for t, c in type_counts.items():
+        # rarer => bigger weight
+        w = (median_c / float(c)) ** float(alpha)
+        type_weight[t] = w
+
+    # build per-label weights
+    weights = torch.ones(len(label2id), dtype=torch.float)
+
+    for lab, lab_id in label2id.items():
+        if lab == "O":
+            continue
+        t = tag_to_type(lab)
+        if t is None or t not in type_weight:
+            weights[lab_id] = 1.0
+        else:
+            weights[lab_id] = float(type_weight[t])
+
+    # O weight (keep it near 1, slightly down if anything)
+    weights[label2id["O"]] = 1.0 * float(o_weight)
+
+    # clamp
+    weights = torch.clamp(weights, min=min_w, max=max_w)
+
+    # normalize so mean weight is 1 (optional but nice)
+    weights = weights / weights.mean()
+
+    return weights
 
 def make_type_level_class_weights(
     label2id,
@@ -521,19 +569,21 @@ def main(
     # Compute class weights
     # -----------------------------
     counts = compute_label_counts(train_dataset)
-    class_weights = make_type_level_class_weights(
+    class_weights = make_type_level_class_weights_balanced(
         label2id=label2id,
         id2label=id2label,
         train_dataset=train_dataset,
-        scheme="sqrt_inv",   # or "log_inv" for gentler
-        smoothing=1.0,
-        o_weight=0.9,        # IMPORTANT: keep closer to 1 to avoid entity spam
-        min_w=0.2,
+         alpha=0.5,
+        o_weight=0.9,
+        min_w=0.5,
         max_w=3.0,
         )
 
     print_weights(class_weights, id2label)
 
+    print("O weight:", float(class_weights[label2id["O"]]))
+    print("Mean entity weight:", float(class_weights[1:].mean()))
+    print("Max weight:", float(class_weights.max()), "Min weight:", float(class_weights.min()))
 
     print(f"Loading tokenizer & model: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -586,6 +636,7 @@ def main(
         lr_scheduler_type="cosine",
         group_by_length=True,
         length_column_name="length",
+        max_grad_norm=1.0,
     )
 
     trainer = WeightedTokenTrainer(
@@ -597,10 +648,10 @@ def main(
         data_collator=data_collator,
         compute_metrics=compute_metrics,
         class_weights=class_weights,
-        label_smoothing=0.05,
+        label_smoothing=0.03,
         llrd=True,
         layer_decay=0.9,
-        head_lr_mult=5.0,
+        head_lr_mult=3.0,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
     )
 
