@@ -574,9 +574,9 @@ def main(
         id2label=id2label,
         train_dataset=train_dataset,
          alpha=0.5,
-        o_weight=0.9,
-        min_w=0.5,
-        max_w=3.0,
+        o_weight=0.5,
+        min_w=0.3,
+        max_w=4.0,
         )
 
     print_weights(class_weights, id2label)
