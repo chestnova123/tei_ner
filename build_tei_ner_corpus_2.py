@@ -16,9 +16,11 @@ from datasets import Dataset, DatasetDict
 # 1. Global config
 # ============================================================
 
-MODEL_NAME = "xlm-roberta-base"  # or another HF model
+MODEL_NAME = "xlm-roberta-large"  # or another HF model
 MAX_LENGTH = 512  # truncation length
 RANDOM_SEED = 42
+CHUNK_LEN = 480        # model input length per chunk (<=512)
+CHUNK_STRIDE = 128
 
 MARK_DEL = True 
 MARK_ADD = True
@@ -154,9 +156,6 @@ def sanitize_xml_text(xml_text, entity_map):
 # ============================================================
 # 2. Normalization of <p> and char map
 # ============================================================
-
-
-from lxml import etree
 
 
 def normalize_paragraph(p_elem):
@@ -340,83 +339,100 @@ def extract_entities_from_paragraph(p_elem, text, char_map):
 # ============================================================
 
 
-def spans_to_bilou_labels(text, entities, tokenizer, label2id, max_length=512):
+def spans_to_bilou_chunked(text, entities, tokenizer, label2id, chunk_len=480, stride=128):
     """
-    Convert char-based entity spans into BILOU token labels.
-
-    Parameters
-    ----------
-    text : str
-        Normalized paragraph text.
-    entities : list of dict
-        Each dict: {"start": int, "end": int, "label": str}
-        where label is the TYPE (e.g. "PERSON", "PLACE", ...), no BILOU prefix.
-    tokenizer : HF tokenizer
-    label2id : dict
-        Mapping from label string to integer id (e.g. "B-PERSON" -> 1).
-    max_length : int
-        Max sequence length for tokenizer (with truncation).
-
-    Returns
-    -------
-    encoding : dict
-        Tokenized input plus "labels" field with label ids per token.
+    Tokenize WITHOUT truncation, then create overlapping windows (chunks).
+    Returns a list of dicts, each containing input_ids/attention_mask/labels
+    for one chunk.
     """
-    encoding = tokenizer(
+    enc = tokenizer(
         text,
         return_offsets_mapping=True,
-        truncation=True,
-        max_length=max_length,
+        truncation=False,
+        add_special_tokens=True,
     )
-    offsets = encoding["offset_mapping"]
 
-    # Start with all tokens as "O"
-    token_tags = ["O"] * len(offsets)
+    input_ids_all = enc["input_ids"]
+    attn_all = enc["attention_mask"]
+    offsets_all = enc["offset_mapping"]
 
-    # Assign BILOU tags for each entity
-    def assign_entity(entity):
-        start, end, ent_type = entity["start"], entity["end"], entity["label"]
+    # We'll build windows over the *full* tokenized sequence.
+    # Keep special tokens in place; offsets for special tokens are (0,0).
+    n = len(input_ids_all)
 
-        token_indices = []
-        for i, (tok_start, tok_end) in enumerate(offsets):
-            # (0,0) for special tokens like [CLS], [SEP]
-            if tok_start == tok_end == 0:
+    # Helper: build token-level BILOU tags for a given offset list
+    def bilou_for_offsets(offsets):
+        token_tags = ["O"] * len(offsets)
+
+        for ent in entities:
+            start, end, ent_type = ent["start"], ent["end"], ent["label"]
+
+            token_indices = []
+            for i, (ts, te) in enumerate(offsets):
+                if ts == te == 0:
+                    continue
+                if te <= start or ts >= end:
+                    continue
+                token_indices.append(i)
+
+            if not token_indices:
                 continue
-            # check overlap
-            if tok_end <= start or tok_start >= end:
-                continue
-            token_indices.append(i)
 
-        if not token_indices:
-            return  # entity truncated or misaligned
+            token_indices.sort()
+            if len(token_indices) == 1:
+                token_tags[token_indices[0]] = f"U-{ent_type}"
+            else:
+                token_tags[token_indices[0]] = f"B-{ent_type}"
+                for ti in token_indices[1:-1]:
+                    token_tags[ti] = f"I-{ent_type}"
+                token_tags[token_indices[-1]] = f"L-{ent_type}"
 
-        token_indices.sort()
-        n = len(token_indices)
+        labels = []
+        for (ts, te), tag in zip(offsets, token_tags):
+            if ts == te == 0:
+                labels.append(-100)
+            else:
+                labels.append(label2id[tag])
+        return labels
 
-        if n == 1:
-            token_tags[token_indices[0]] = f"U-{ent_type}"
-        else:
-            token_tags[token_indices[0]] = f"B-{ent_type}"
-            for ti in token_indices[1:-1]:
-                token_tags[ti] = f"I-{ent_type}"
-            token_tags[token_indices[-1]] = f"L-{ent_type}"
+    chunks = []
+    start = 0
+    while start < n:
+        end = min(start + chunk_len, n)
 
-    for ent in entities:
-        assign_entity(ent)
+        chunk_input_ids = input_ids_all[start:end]
+        chunk_attn = attn_all[start:end]
+        chunk_offsets = offsets_all[start:end]
 
-    # Convert tags to label IDs, ignoring special tokens in the loss
-    labels_ids = []
-    for (tok_start, tok_end), tag in zip(offsets, token_tags):
-        if tok_start == tok_end == 0:
-            labels_ids.append(-100)
-        else:
-            labels_ids.append(label2id[tag])
+        # Compute labels for this chunk
+        chunk_labels = bilou_for_offsets(chunk_offsets)
 
-    encoding["labels"] = labels_ids
-    # Optionally drop offset_mapping if you don’t need it later
-    # del encoding["offset_mapping"]
-    return encoding
+        # Pad to chunk_len so trainer batches cleanly (optional but convenient)
+        pad_id = tokenizer.pad_token_id
+        pad_len = chunk_len - len(chunk_input_ids)
+        if pad_len > 0:
+            chunk_input_ids = chunk_input_ids + [pad_id] * pad_len
+            chunk_attn = chunk_attn + [0] * pad_len
+            chunk_labels = chunk_labels + [-100] * pad_len
 
+        chunks.append(
+            {
+                "input_ids": chunk_input_ids,
+                "attention_mask": chunk_attn,
+                "labels": chunk_labels,
+                # keep for debugging if you want:
+                # "offset_mapping": chunk_offsets,
+                "chunk_start": start,
+                "chunk_end": end,
+            }
+        )
+
+        if end == n:
+            break
+        # overlap
+        start = end - stride
+
+    return chunks
 
 # ============================================================
 # 5. Walking the TEI corpus and collecting examples
@@ -458,24 +474,30 @@ def process_document(xml_path, doc_id):
             continue
 
         entities = extract_entities_from_paragraph(p_elem, text, char_map)
-        encoding = spans_to_bilou_labels(
+        chunk_encodings = spans_to_bilou_chunked(
             text,
             entities,
             tokenizer,
             label2id,
-            max_length=MAX_LENGTH,
+            chunk_len=CHUNK_LEN,
+            stride=CHUNK_STRIDE,
         )
 
-        example = {
-            "text": text,
-            "entities": entities,
-            "doc_id": doc_id,
-            "p_index": p_idx,
-            "input_ids": encoding["input_ids"],
-            "attention_mask": encoding["attention_mask"],
-            "labels": encoding["labels"],
-        }
-        examples.append(example)
+        for c_idx, encoding in enumerate(chunk_encodings):
+            example = {
+                "text": text,
+                "entities": entities,
+                "doc_id": doc_id,
+                "p_index": p_idx,
+                "chunk_index": c_idx,
+                "chunk_start": encoding["chunk_start"],
+                "chunk_end": encoding["chunk_end"],
+                "input_ids": encoding["input_ids"],
+                "attention_mask": encoding["attention_mask"],
+                "labels": encoding["labels"],
+            }
+            examples.append(example)
+
 
     return examples
 

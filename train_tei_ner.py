@@ -26,6 +26,7 @@ from collections import Counter
 import math
 import torch.nn.functional as F
 import re
+from transformers import set_seed
 
 
 # =====================================================================
@@ -539,11 +540,15 @@ def main(
     batch_size: int,
     learning_rate: float,
     weight_decay: float,
+    seed: int,
     resume_from_checkpoint: str | None = None,
 ):
     dataset_path = str(Path(dataset_path).expanduser().resolve())
     output_dir = str(Path(output_dir).expanduser().resolve())
 
+    print(f"Using random seed: {seed}")
+    set_seed(seed)
+    
     print(f"Loading dataset from: {dataset_path}")
     ds_dict = load_from_disk(dataset_path)
 
@@ -637,6 +642,8 @@ def main(
         group_by_length=True,
         length_column_name="length",
         max_grad_norm=1.0,
+        seed=seed,
+        data_seed=seed,
     )
 
     trainer = WeightedTokenTrainer(
@@ -693,6 +700,12 @@ if __name__ == "__main__":
         help="Base transformer model name (Hugging Face hub).",
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility"
+    )
+    parser.add_argument(
         "--output_dir",
         type=str,
         required=True,
@@ -740,4 +753,5 @@ if __name__ == "__main__":
         learning_rate=args.lr,
         weight_decay=args.weight_decay,
         resume_from_checkpoint=args.resume_from_checkpoint,
+        seed=args.seed,
     )
