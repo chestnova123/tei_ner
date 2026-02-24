@@ -27,6 +27,9 @@ import math
 import torch.nn.functional as F
 import re
 from transformers import set_seed
+import csv
+from datetime import datetime
+import os
 
 
 # =====================================================================
@@ -95,28 +98,72 @@ def per_type_scores(labels_list, preds_list):
         zero_division=0,
     )
 
-    # rep keys are entity type names (e.g. "PERSON") plus averages
     out = {}
     for t in TYPES:
         if t in rep:
+            out[f"precision_{t}"] = rep[t]["precision"]
             out[f"recall_{t}"] = rep[t]["recall"]
             out[f"f1_{t}"] = rep[t]["f1-score"]
     return out
+
+def append_metrics_to_csv(
+    output_dir: str,
+    split: str,
+    metrics: dict,
+    run_info: dict,
+):
+    """
+    Append one row to output_dir/metrics.csv.
+    Automatically creates the file with a header if it doesn't exist.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    csv_path = os.path.join(output_dir, "metrics.csv")
+
+    # Flatten: keep metrics as columns + run_info as columns
+    row = {}
+    row.update(run_info)
+    row["split"] = split
+
+    # Normalize metric keys (Trainer returns keys like eval_loss, eval_f1, etc.)
+    # We'll store them exactly as received.
+    for k, v in metrics.items():
+        # Convert numpy types to plain python for CSV writing
+        if hasattr(v, "item"):
+            v = v.item()
+        row[k] = v
+
+    # Stable column order:
+    # - run info first
+    # - then core metrics
+    # - then per-type metrics (sorted)
+    core = ["eval_loss", "precision", "recall", "f1"]
+    per_type = sorted([k for k in row.keys() if k.startswith(("precision_", "recall_", "f1_"))])
+    other_metrics = sorted([k for k in row.keys() if k not in set(run_info.keys()) | {"split"} | set(core) | set(per_type)])
+
+    fieldnames = list(run_info.keys()) + ["split"] + core + other_metrics + per_type
+
+    file_exists = os.path.exists(csv_path)
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow({k: row.get(k, "") for k in fieldnames})
+
 
 def compute_metrics(eval_pred):
     predictions, labels = eval_pred
     preds_list, labels_list = align_predictions(predictions, labels)
 
     # DEBUG: inspect what seqeval is seeing
-    flat_gold = [t for seq in labels_list for t in seq]
-    flat_pred = [t for seq in preds_list for t in seq]
-    gold_counts = Counter(flat_gold)
-    pred_counts = Counter(flat_pred)
+    # flat_gold = [t for seq in labels_list for t in seq]
+    # flat_pred = [t for seq in preds_list for t in seq]
+    # gold_counts = Counter(flat_gold)
+    # pred_counts = Counter(flat_pred)
 
-    print("DEBUG gold top tags:", gold_counts.most_common(10))
-    print("DEBUG pred top tags:", pred_counts.most_common(10))
-    print("DEBUG #gold non-O:", sum(1 for t in flat_gold if t != "O"))
-    print("DEBUG #pred non-O:", sum(1 for t in flat_pred if t != "O"))
+    # print("DEBUG gold top tags:", gold_counts.most_common(10))
+    # print("DEBUG pred top tags:", pred_counts.most_common(10))
+    # print("DEBUG #gold non-O:", sum(1 for t in flat_gold if t != "O"))
+    # print("DEBUG #pred non-O:", sum(1 for t in flat_pred if t != "O"))
     
     # Tell seqeval explicitly that we are using BILOU, in strict mode.
     precision = precision_score(labels_list, preds_list, mode="strict", scheme=BILOU)
@@ -666,14 +713,33 @@ def main(
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
     # ----------- Evaluate -----------
-    print("Evaluating on validation set...")
-    metrics = trainer.evaluate()
-    print(metrics)
+    print("Evaluating on validation set.")
+    val_metrics = trainer.evaluate()
+    print(val_metrics)
+
+    run_info = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "model_name": model_name,
+        "dataset_path": dataset_path,
+        "learning_rate": learning_rate,
+        "weight_decay": weight_decay,
+        "batch_size": batch_size,
+        "num_train_epochs": num_train_epochs,
+        "gradient_accumulation_steps": training_args.gradient_accumulation_steps,
+        "eval_steps": training_args.eval_steps,
+        "save_steps": training_args.save_steps,
+        "best_metric": getattr(trainer.state, "best_metric", None),
+        "best_model_checkpoint": getattr(trainer.state, "best_model_checkpoint", None),
+        "global_step": trainer.state.global_step,
+    }
+
+    append_metrics_to_csv(output_dir, "validation", val_metrics, run_info)
 
     if test_dataset is not None:
-        print("Evaluating on test set...")
+        print("Evaluating on test set.")
         test_metrics = trainer.evaluate(test_dataset)
         print(test_metrics)
+        append_metrics_to_csv(output_dir, "test", test_metrics, run_info)
 
     # ----------- Save final model -----------
     print(f"Saving model and tokenizer to: {output_dir}")

@@ -1,0 +1,3 @@
+24.02.26
+Baseline testing for bert_base_cased, gbert_base, bert_base_uncased, roberta_base, roberta_large.
+Each model/tokeniser with its own dataset chunking paragraphs to 480 tokens with chunk overlap. 
