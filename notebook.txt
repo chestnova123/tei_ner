@@ -1,3 +1,9 @@
 24.02.26
-Baseline testing for bert_base_cased, gbert_base, bert_base_uncased, roberta_base, roberta_large.
-Each model/tokeniser with its own dataset chunking paragraphs to 480 tokens with chunk overlap. 
+Baseline testing for dbmdz/bert-base-cased, deepset/gbert-base, dbmdz/bert-base-uncased, xlm-roberta-base, xlm-roberta-large.
+Each model/tokeniser with its own dataset chunking paragraphs to 480 tokens with chunk overlap, chunk stride 128, label scheme BILOU, slass weighting on, early stopping on (patience 3, eval_steps = 400, save_steps = 400).
+Learning rates: 1e-5, 2e-5, 3e-5.
+Seeds: 42-43.
+Epochs: 8, early stoping patience 3.
+Batch size 16
+Warm-up ration 0.2
+llrd=True, layer_decay=0.9, head_lr_mult=3.0,

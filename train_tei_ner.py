@@ -642,8 +642,6 @@ def main(
 
     config = AutoConfig.from_pretrained(
         model_name,
-        hidden_dropout_prob=0.05,
-        attention_probs_dropout_prob=0.05,
         num_labels=len(LABELS),
         id2label=id2label,
         label2id=label2id,
@@ -660,9 +658,9 @@ def main(
         output_dir=output_dir,
 
         eval_strategy="steps",
-        eval_steps=200,
+        eval_steps=400,
         save_strategy="steps",
-        save_steps=200,
+        save_steps=400,
         save_total_limit=2,
 
         logging_strategy="steps",
@@ -706,7 +704,7 @@ def main(
         llrd=True,
         layer_decay=0.9,
         head_lr_mult=3.0,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
     )
 
     # ----------- Train -----------
