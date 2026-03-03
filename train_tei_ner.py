@@ -255,9 +255,9 @@ def make_type_level_class_weights_balanced(
     label2id,
     id2label,
     train_dataset,
-    alpha: float = 0.5,     # 0.5 = sqrt, 1.0 = full ratio
-    o_weight: float = 0.9,  # keep O slightly down or ~1.0
-    min_w: float = 0.5,     # IMPORTANT: don’t allow entities to get tiny
+    alpha: float = 0.5,    
+    o_weight: float = 0.8,  
+    min_w: float = 0.5,    
     max_w: float = 3.0,
 ):
     """
@@ -308,8 +308,8 @@ def make_type_level_class_weights(
     train_dataset,
     scheme="sqrt_inv",
     smoothing=1.0,
-    o_weight=0.9,
-    min_w=0.2,
+    o_weight=0.8,
+    min_w=0.5,
     max_w=3.0,
 ):
     """
@@ -381,7 +381,7 @@ class WeightedTokenTrainer(Trainer):
         label_smoothing=0.0,
         llrd=False,
         layer_decay=0.9,
-        head_lr_mult=5.0,
+        head_lr_mult=4.0,
         *args,
         **kwargs,
     ):
@@ -484,7 +484,7 @@ def build_llrd_param_groups(
     base_lr: float,
     weight_decay: float,
     layer_decay: float = 0.9,
-    head_lr_mult: float = 5.0,
+    head_lr_mult: float = 4.0,
 ):
     """
     Build AdamW param groups with layer-wise LR decay (LLRD).
@@ -626,9 +626,9 @@ def main(
         id2label=id2label,
         train_dataset=train_dataset,
          alpha=0.5,
-        o_weight=0.5,
-        min_w=1,
-        max_w=5.0,
+        o_weight=0.8,
+        min_w=0.5,
+        max_w=3.0,
         )
 
     print_weights(class_weights, id2label)
@@ -669,7 +669,7 @@ def main(
         learning_rate=learning_rate,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=batch_size,
-        gradient_accumulation_steps=2,
+        gradient_accumulation_steps=4,
 
         num_train_epochs=num_train_epochs,
         weight_decay=weight_decay,
@@ -703,7 +703,7 @@ def main(
         label_smoothing=0.03,
         llrd=True,
         layer_decay=0.9,
-        head_lr_mult=3.0,
+        head_lr_mult=4.0,
         callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
     )
 

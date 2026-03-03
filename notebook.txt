@@ -1,9 +1,94 @@
 24.02.26
-Baseline testing for dbmdz/bert-base-cased, deepset/gbert-base, dbmdz/bert-base-uncased, xlm-roberta-base, xlm-roberta-large.
-Each model/tokeniser with its own dataset chunking paragraphs to 480 tokens with chunk overlap, chunk stride 128, label scheme BILOU, slass weighting on, early stopping on (patience 3, eval_steps = 400, save_steps = 400).
+Baseline testing for dbmdz/bert-base-german-cased, deepset/gbert-base, dbmdz/bert-base-german-uncased, xlm-roberta-base, xlm-roberta-large.
+Each model/tokeniser with its own dataset chunking paragraphs to 480 tokens with chunk overlap, chunk stride 128, label scheme BILOU, class weighting on, early stopping on (patience 3, eval_steps = 400, save_steps = 400).
 Learning rates: 1e-5, 2e-5, 3e-5.
 Seeds: 42-43.
 Epochs: 8, early stoping patience 3.
 Batch size 16
 Warm-up ration 0.2
-llrd=True, layer_decay=0.9, head_lr_mult=3.0,
+llrd=True, layer_decay=0.9, head_lr_mult=3.0
+weight decay 0.01
+
+I. roberta large
+1. seed 42 lr 1e-5
+2. 42 2e-5
+3. 42 3e-5
+4. 43 1e-5
+5. 43 2e-5
+6. 43 3e-5
+
+II. bert-base-german-cased
+
+1. 42 lr 1e-5
+2. 42 2e-5
+3. 42 3e-5
+4. 43 1e-5
+5. 43 2e-5
+6. 43 3e-5
+
+III. gbert
+
+1. 42 lr 1e-5
+2. 42 2e-5
+3. 42 3e-5
+4. 43 1e-5
+5. 43 2e-5
+6. 43 3e-5
+
+IV. roberta base
+1. 42 lr 1e-5
+2. 42 2e-5
+3. 42 3e-5
+4. 43 1e-5
+5. 43 2e-5
+6. 43 3e-5
+
+IV. roberta large
+1. 42 lr 1e-5
+2. 42 2e-5
+3. 42 3e-5
+4. 43 1e-5
+5. 43 2e-5
+6. 43 3e-5
+
+Results:
+model_name	seed	f1_average		mean f1			sd
+dbmdz/bert-base-german-cased	42	0.499536331	0.500508936	0.031152027
+dbmdz/bert-base-german-cased	43	0.50148154		
+dbmdz/bert-base-german-uncased	42	0.498544975	0.497131813	0.036257331
+dbmdz/bert-base-german-uncased	43	0.495718652		
+deepset/gbert-base	42	0.485887617	0.492535012	0.031010135
+deepset/gbert-base	43	0.499182406		
+xlm-roberta-base	42	0.496722164	0.495518781	0.031981226
+xlm-roberta-base	43	0.494315398		
+xlm-roberta-large	42	0.503443266	0.513164731	0.028696666
+xlm-roberta-large	43	0.522886195		
+
+stricktly speaking these models are all tied. Can try to go forward with roberta large and gbert cased to save computation
+
+STAGE 2 Training
+Two models: dbmdz/bert-base-german-cased and xlm-roberta-large
+Hyperparameters: class weighting: alpha: float = 0.5,    
+    o_weight: float = 0.8 and 0.9  
+    min_w: float = 0.5,    
+    max_w: float = 3.0, 
+eval and save steps: 400 (unchanged)
+head_lr_mult = 4.0 and 3.0
+lr for roberta large: lr ∈ {1e-5, 1.5e-5, 2e-5}
+gradient_accumulation_steps=4
+
+I.
+o_weight = 0.9
+head_lr_mult = 4.0
+II.
+o_weight = 0.9
+head_lr_mult = 3.0
+III.
+o_weight = 0.8
+head_lr_mult = 4.0
+IV. 
+o_weight = 0.8
+head_lr_mult = 3.0
+
+
+ 

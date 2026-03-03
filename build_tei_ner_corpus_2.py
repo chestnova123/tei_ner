@@ -16,7 +16,7 @@ from datasets import Dataset, DatasetDict
 # 1. Global config
 # ============================================================
 
-MODEL_NAME = "xlm-roberta-large"  # or another HF model
+MODEL_NAME = "deepset/gbert-base"  # or another HF model
 MAX_LENGTH = 512  # truncation length
 RANDOM_SEED = 42
 CHUNK_LEN = 480        # model input length per chunk (<=512)
