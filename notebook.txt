@@ -69,4 +69,9 @@ stricktly speaking these models are all tied. Can try to go forward with roberta
 The model is doing well on the common entities but badly on the unusual ones
 next step - domain adaptive pre-training
 
+DAPT has not delivered - in fact things are worse. Especially on bible tags - a boundary detection problem.
+
+Add CRF to training - substantial improvement but still boundary detection issues with bibl and org.
+Switch from BILOU scheme to BIO scheme.
+
  

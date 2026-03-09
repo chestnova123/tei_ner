@@ -53,7 +53,7 @@ TYPES = [
 
 LABELS = ["O"]
 for t in TYPES:
-    LABELS.extend([f"B-{t}", f"I-{t}", f"L-{t}", f"U-{t}"])
+    LABELS.extend([f"B-{t}", f"I-{t}"])
 
 label2id = {l: i for i, l in enumerate(LABELS)}
 id2label = {i: l for l, i in label2id.items()}

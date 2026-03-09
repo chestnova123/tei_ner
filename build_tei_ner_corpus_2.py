@@ -56,10 +56,10 @@ TYPES = [
     "OTHER",
 ]
 
-# BILOU label set
+# BIO label set
 LABELS = ["O"]
 for t in TYPES:
-    LABELS.extend([f"B-{t}", f"I-{t}", f"L-{t}", f"U-{t}"])
+    LABELS.extend([f"B-{t}", f"I-{t}"])
 
 label2id = {l: i for i, l in enumerate(LABELS)}
 id2label = {i: l for l, i in label2id.items()}
@@ -502,14 +502,10 @@ def spans_to_bilou_chunked(text, entities, tokenizer, label2id, chunk_len=480, s
             if not token_indices:
                 continue
 
-            token_indices.sort()
-            if len(token_indices) == 1:
-                token_tags[token_indices[0]] = f"U-{ent_type}"
-            else:
-                token_tags[token_indices[0]] = f"B-{ent_type}"
-                for ti in token_indices[1:-1]:
-                    token_tags[ti] = f"I-{ent_type}"
-                token_tags[token_indices[-1]] = f"L-{ent_type}"
+            # BIO tagging
+            token_tags[token_indices[0]] = f"B-{ent_type}"
+            for ti in token_indices[1:]:
+                token_tags[ti] = f"I-{ent_type}"
 
         labels = []
         for (ts, te), tag in zip(offsets, token_tags):
