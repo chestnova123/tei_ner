@@ -460,10 +460,23 @@ class WeightedTokenTrainer(Trainer):
             logits = outputs["logits"]  # [B, T, C]
 
             # Mask = labeled positions if labels exist, else attention mask
+            attn = inputs.get("attention_mask")
+
+            # Start from attention mask (real tokens/padding)
+            mask = attn.bool() if attn is not None else torch.ones_like(inputs["input_ids"], dtype=torch.bool)
+
+            # Turn off positions you intended to ignore (-100), if labels exist
             if labels is not None:
-                mask = (labels != -100)
-            else:
-                mask = inputs.get("attention_mask").bool()
+                ignore = (labels == -100)
+                mask = mask & (~ignore)
+
+            # torchcrf requirement: first timestep must be on
+            mask[:, 0] = True
+
+            # Safety: if a sequence somehow has no valid positions, keep timestep 0 on
+            empty = mask.sum(dim=1) == 0
+            if empty.any():
+                mask[empty, 0] = True
 
             decoded = model.decode(logits, mask=mask)  # list of lists
 
@@ -733,6 +746,11 @@ class TokenClassifierWithCRF(nn.Module):
         mask:   [B, T] bool
         returns: List[List[int]] decoded label ids (variable lengths)
         """
+        mask = mask.clone()
+        mask[:, 0] = True
+        empty = mask.sum(dim=1) == 0
+        if empty.any():
+            mask[empty, 0] = True
         return self.crf.decode(logits, mask=mask)
 
 # =====================================================================
