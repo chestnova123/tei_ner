@@ -174,6 +174,45 @@ def compute_metrics(eval_pred):
     out.update(per_type_scores(labels_list, preds_list))
     return out
 
+import numpy as np
+from collections import Counter
+
+def print_predicted_tag_counts(trainer, dataset, id2label, topk=30):
+    """
+    Prints counts of predicted labels (excluding tokens where gold label is -100),
+    plus a focused breakdown for BIBL.
+    """
+    pred = trainer.predict(dataset)
+    logits = pred.predictions              # [N, T, C]
+    labels = pred.label_ids                # [N, T]
+
+    pred_ids = np.argmax(logits, axis=-1)  # [N, T]
+
+    all_counts = Counter()
+    bibl_counts = Counter()
+
+    n_tokens = 0
+    for i in range(pred_ids.shape[0]):
+        for j in range(pred_ids.shape[1]):
+            if labels[i, j] == -100:
+                continue
+            lab = id2label[int(pred_ids[i, j])]
+            all_counts[lab] += 1
+            n_tokens += 1
+            if lab.endswith("-BIBL"):
+                bibl_counts[lab] += 1
+
+    print(f"Counted {n_tokens} predicted tokens (masked tokens excluded).")
+    print("\nTop predicted tags:")
+    for lab, c in all_counts.most_common(topk):
+        print(f"{lab:10s} {c}")
+
+    total_bibl = sum(bibl_counts.values())
+    print("\nBIBL predicted tags:")
+    print("Total BIBL tokens predicted:", total_bibl)
+    for lab, c in bibl_counts.most_common():
+        print(f"{lab:10s} {c}")
+
 
 # =============================
 # 2.1 Weighted labels
@@ -256,7 +295,7 @@ def make_type_level_class_weights_balanced(
     id2label,
     train_dataset,
     alpha: float = 0.5,    
-    o_weight: float = 0.8,  
+    o_weight: float = 0.85,  
     min_w: float = 0.5,    
     max_w: float = 3.0,
 ):
@@ -308,7 +347,7 @@ def make_type_level_class_weights(
     train_dataset,
     scheme="sqrt_inv",
     smoothing=1.0,
-    o_weight=0.8,
+    o_weight=0.85,
     min_w=0.5,
     max_w=3.0,
 ):
@@ -626,7 +665,7 @@ def main(
         id2label=id2label,
         train_dataset=train_dataset,
          alpha=0.5,
-        o_weight=0.8,
+        o_weight=0.85,
         min_w=0.5,
         max_w=3.0,
         )
@@ -700,11 +739,11 @@ def main(
         data_collator=data_collator,
         compute_metrics=compute_metrics,
         class_weights=class_weights,
-        label_smoothing=0.03,
+        label_smoothing=0.0,
         llrd=True,
         layer_decay=0.9,
         head_lr_mult=4.0,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=2)],
     )
 
     # ----------- Train -----------
@@ -739,6 +778,8 @@ def main(
         print(test_metrics)
         append_metrics_to_csv(output_dir, "test", test_metrics, run_info)
 
+
+    print_predicted_tag_counts(trainer, eval_dataset, id2label)
     # ----------- Save final model -----------
     print(f"Saving model and tokenizer to: {output_dir}")
     trainer.save_model(output_dir)
