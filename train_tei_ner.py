@@ -31,6 +31,10 @@ import csv
 from datetime import datetime
 import os
 
+from torch import nn
+from torchcrf import CRF
+from transformers import AutoModel
+
 
 # =====================================================================
 # 1. Label definitions (must match build_tei_ner_corpus.py exactly)
@@ -62,10 +66,16 @@ id2label = {i: l for l, i in label2id.items()}
 
 def align_predictions(predictions, label_ids):
     """
-    Convert model outputs + gold labels into label strings for seqeval.
-    Ignores tokens with label_id == -100.
+    Supports:
+      - predictions as logits [B, T, C]  (argmax)
+      - predictions as decoded ids [B, T] (already final tags)
     """
-    preds = np.argmax(predictions, axis=2)
+    if predictions.ndim == 3:
+        preds = np.argmax(predictions, axis=2)
+    elif predictions.ndim == 2:
+        preds = predictions
+    else:
+        raise ValueError(f"Unexpected predictions shape: {predictions.shape}")
 
     batch_size, seq_len = preds.shape
     out_label_list = []
@@ -78,7 +88,7 @@ def align_predictions(predictions, label_ids):
             if label_ids[i, j] == -100:
                 continue
             example_labels.append(id2label[label_ids[i, j]])
-            example_preds.append(id2label[preds[i, j]])
+            example_preds.append(id2label[int(preds[i, j])])
         out_label_list.append(example_labels)
         out_pred_list.append(example_preds)
 
@@ -435,7 +445,54 @@ class WeightedTokenTrainer(Trainer):
 
         self._printed_weights_debug = False
 
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        # Use default behavior for non-CRF
+        if not hasattr(model, "crf"):
+            return super().prediction_step(model, inputs, prediction_loss_only, ignore_keys)
+
+        model.eval()
+        with torch.no_grad():
+            labels = inputs.get("labels")
+            outputs = model(
+                input_ids=inputs.get("input_ids"),
+                attention_mask=inputs.get("attention_mask"),
+            )
+            logits = outputs["logits"]  # [B, T, C]
+
+            # Mask = labeled positions if labels exist, else attention mask
+            if labels is not None:
+                mask = (labels != -100)
+            else:
+                mask = inputs.get("attention_mask").bool()
+
+            decoded = model.decode(logits, mask=mask)  # list of lists
+
+            # Pad decoded sequences back to [B, T] with 0s (won't be read where label=-100)
+            B, T = logits.shape[:2]
+            pred_ids = torch.zeros((B, T), dtype=torch.long, device=logits.device)
+            for i, seq in enumerate(decoded):
+                L = min(len(seq), T)
+                pred_ids[i, :L] = torch.tensor(seq[:L], device=logits.device)
+
+            loss = None
+            if labels is not None:
+                # compute loss for reporting
+                safe_inputs = dict(inputs)
+                loss = model(**safe_inputs)["loss"].detach()
+
+        # return (loss, predictions, labels) where predictions is numpy
+        if prediction_loss_only:
+            return (loss, None, None)
+
+        return (loss, pred_ids.cpu().numpy(), labels.cpu().numpy() if labels is not None else None)
+    
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        # ---- CRF path ----
+        if hasattr(model, "crf"):
+            outputs = model(**inputs)
+            loss = outputs["loss"]
+            return (loss, outputs) if return_outputs else loss
+        
         labels = inputs.get("labels")  # [B, T]
         outputs = model(**inputs)
         logits = outputs.get("logits")  # [B, T, C]
@@ -612,6 +669,62 @@ def build_llrd_param_groups(
 
     return param_groups
 
+#CRF
+
+class TokenClassifierWithCRF(nn.Module):
+    """
+    Transformer encoder + linear emissions + CRF.
+    Uses the same label2id/id2label mapping as your script (BILOU + O).
+    """
+
+    def __init__(self, model_name: str, config: AutoConfig):
+        super().__init__()
+        self.num_labels = config.num_labels
+        self.config = config
+
+        self.backbone = AutoModel.from_pretrained(model_name, config=config)
+        dropout_prob = getattr(config, "hidden_dropout_prob", 0.1)
+        self.dropout = nn.Dropout(dropout_prob)
+        self.classifier = nn.Linear(config.hidden_size, self.num_labels)
+
+        # batch_first=True => emissions shape [B, T, C]
+        self.crf = CRF(self.num_labels, batch_first=True)
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        labels=None,
+        **kwargs,
+    ):
+        outputs = self.backbone(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
+        seq = outputs.last_hidden_state  # [B, T, H]
+        seq = self.dropout(seq)
+        emissions = self.classifier(seq)  # [B, T, C]
+
+        out = {"logits": emissions}
+
+        if labels is not None:
+            # labels: [B, T], with -100 for special/padded tokens
+            # CRF needs valid label ids everywhere but a mask to ignore positions.
+            mask = (labels != -100)
+            safe_labels = labels.clone()
+            safe_labels[~mask] = 0  # any valid label id; will be ignored by mask
+
+            # CRF returns log-likelihood; we minimize negative log-likelihood
+            nll = -self.crf(emissions, safe_labels, mask=mask, reduction="mean")
+            out["loss"] = nll
+
+        return out
+
+    @torch.no_grad()
+    def decode(self, logits, mask):
+        """
+        logits: [B, T, C]
+        mask:   [B, T] bool
+        returns: List[List[int]] decoded label ids (variable lengths)
+        """
+        return self.crf.decode(logits, mask=mask)
 
 # =====================================================================
 # 3. Main training function
@@ -628,6 +741,7 @@ def main(
     weight_decay: float,
     seed: int,
     resume_from_checkpoint: str | None = None,
+    use_crf: bool,
 ):
     dataset_path = str(Path(dataset_path).expanduser().resolve())
     output_dir = str(Path(output_dir).expanduser().resolve())
@@ -686,10 +800,10 @@ def main(
         label2id=label2id,
     )
 
-    model = AutoModelForTokenClassification.from_pretrained(
-        model_name,
-        config=config,
-    )
+    if use_crf:
+        model = TokenClassifierWithCRF(model_name=model_name, config=config)
+    else:
+        model = AutoModelForTokenClassification.from_pretrained(model_name, config=config)
 
     data_collator = DataCollatorForTokenClassification(tokenizer=tokenizer)
 
@@ -841,11 +955,12 @@ if __name__ == "__main__":
         help="Weight decay.",
     )
     parser.add_argument(
-    "--resume_from_checkpoint",
-    type=str,
-    default=None,
-    help="Path to a checkpoint directory to resume training from.",
-)
+        "--resume_from_checkpoint",
+        type=str,
+        default=None,
+        help="Path to a checkpoint directory to resume training from.",
+    )
+    parser.add_argument("--use_crf", action="store_true", help="Use CRF decoding head")
 
     args = parser.parse_args()
 
@@ -859,4 +974,5 @@ if __name__ == "__main__":
         weight_decay=args.weight_decay,
         resume_from_checkpoint=args.resume_from_checkpoint,
         seed=args.seed,
+        use_crf=args.use_crf,
     )
