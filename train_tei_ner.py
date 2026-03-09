@@ -493,11 +493,13 @@ class WeightedTokenTrainer(Trainer):
                 safe_inputs = dict(inputs)
                 loss = model(**safe_inputs)["loss"].detach()
 
-        # return (loss, predictions, labels) where predictions is numpy
+        # return (loss, predictions, labels) where predictions are tensors
         if prediction_loss_only:
             return (loss, None, None)
 
-        return (loss, pred_ids.cpu().numpy(), labels.cpu().numpy() if labels is not None else None)
+        pred_out = pred_ids.detach().cpu()
+        lab_out = labels.detach().cpu() if labels is not None else None
+        return (loss, pred_out, lab_out)
     
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         # ---- CRF path ----
