@@ -188,40 +188,60 @@ import numpy as np
 from collections import Counter
 
 def print_predicted_tag_counts(trainer, dataset, id2label, topk=30):
-    """
-    Prints counts of predicted labels (excluding tokens where gold label is -100),
-    plus a focused breakdown for BIBL.
-    """
+    import numpy as np
+    from collections import Counter
+
     pred = trainer.predict(dataset)
-    logits = pred.predictions              # [N, T, C]
-    labels = pred.label_ids                # [N, T]
+    preds = pred.predictions     # could be [N,T,C] (logits) OR [N,T] (decoded ids)
+    gold  = pred.label_ids       # [N,T]
 
-    pred_ids = np.argmax(logits, axis=-1)  # [N, T]
+    preds = np.asarray(preds)
+    gold  = np.asarray(gold)
 
-    all_counts = Counter()
-    bibl_counts = Counter()
+    # Convert logits -> ids if needed
+    if preds.ndim == 3:
+        pred_ids = np.argmax(preds, axis=-1)
+    elif preds.ndim == 2:
+        pred_ids = preds
+    else:
+        raise ValueError(f"Unexpected predictions shape: {preds.shape}")
+
+    if gold.ndim != 2:
+        raise ValueError(f"Unexpected label_ids shape: {gold.shape}")
+
+    pred_counts = Counter()
+    gold_counts = Counter()
+    bibl_pred = Counter()
+    bibl_gold = Counter()
 
     n_tokens = 0
-    for i in range(pred_ids.shape[0]):
-        for j in range(pred_ids.shape[1]):
-            if labels[i, j] == -100:
+    N, T = pred_ids.shape
+    for i in range(N):
+        for j in range(T):
+            if gold[i, j] == -100:
                 continue
-            lab = id2label[int(pred_ids[i, j])]
-            all_counts[lab] += 1
             n_tokens += 1
-            if lab.endswith("-BIBL"):
-                bibl_counts[lab] += 1
+            pl = id2label[int(pred_ids[i, j])]
+            gl = id2label[int(gold[i, j])]
+            pred_counts[pl] += 1
+            gold_counts[gl] += 1
+            if pl.endswith("-BIBL"):
+                bibl_pred[pl] += 1
+            if gl.endswith("-BIBL"):
+                bibl_gold[gl] += 1
 
-    print(f"Counted {n_tokens} predicted tokens (masked tokens excluded).")
-    print("\nTop predicted tags:")
-    for lab, c in all_counts.most_common(topk):
+    print(f"Counted {n_tokens} tokens (excluding -100).")
+
+    print("\nTop GOLD tags:")
+    for lab, c in gold_counts.most_common(topk):
         print(f"{lab:10s} {c}")
 
-    total_bibl = sum(bibl_counts.values())
-    print("\nBIBL predicted tags:")
-    print("Total BIBL tokens predicted:", total_bibl)
-    for lab, c in bibl_counts.most_common():
+    print("\nTop PRED tags:")
+    for lab, c in pred_counts.most_common(topk):
         print(f"{lab:10s} {c}")
+
+    print("\nBIBL GOLD breakdown:", dict(bibl_gold), "TOTAL:", sum(bibl_gold.values()))
+    print("BIBL PRED breakdown:", dict(bibl_pred), "TOTAL:", sum(bibl_pred.values()))
 
 
 # =============================
