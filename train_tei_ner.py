@@ -683,7 +683,7 @@ class TokenClassifierWithCRF(nn.Module):
         self.config = config
 
         self.backbone = AutoModel.from_pretrained(model_name, config=config)
-        self.base_model_prefix = self.backbone.base_model_prefix  # e.g. "roberta"
+        self.base_model_prefix = "backbone"
         setattr(self, self.base_model_prefix, getattr(self.backbone, self.base_model_prefix))
         dropout_prob = getattr(config, "hidden_dropout_prob", 0.1)
         self.dropout = nn.Dropout(dropout_prob)
