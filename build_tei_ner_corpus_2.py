@@ -16,6 +16,18 @@ from datasets import Dataset, DatasetDict
 # 1. Global config
 # ============================================================
 
+LB_HYPH = "⟦LB_HYPH⟧"
+LB_NORM = "⟦LB⟧"
+
+# chars to treat as hyphen at line breaks
+HYPH_SET = {"-", "\u2010", "\u2011", "\u2212", "\u00AD"}  # - ‐ - − soft hyphen
+DASH_SET = {"\u2013"}  # – (optional)
+JOIN_SET = HYPH_SET | DASH_SET
+
+def _is_word_char(ch: str) -> bool:
+    # matches letters/digits/underscore; good enough for joining
+    return ch.isalnum() or ch == "_"
+
 MODEL_NAME = r"C:\Users\elena\Documents\WORK\USI\STIL PROJECT\ML\dapt\model_rxlm_large_dapt"  # or another HF model
 MAX_LENGTH = 512  # truncation length
 RANDOM_SEED = 42
@@ -41,6 +53,7 @@ TYPES = [
     "BIBL",
     "ARTEFACT",
     "CONCEPT",
+    "OTHER",
 ]
 
 # BILOU label set
@@ -60,6 +73,118 @@ TEI_NS = {"tei": "http://www.tei-c.org/ns/1.0"}
 # Path to Zeichen.dtd
 ENTITIES_DTD_PATH = r"C:\Users\elena\Documents\GitHub\semper-tei_new\scripts\R_transformer_based_entity_prediction\extraction_test\test_in\Zeichen.dtd"
 
+def postprocess_hyphenation(text_chars, char_map):
+    """
+    Operates on the character stream + char_map, removing hyphenation across LB_HYPH
+    and converting LB_NORM to a space, while keeping char_map aligned.
+    """
+
+    # 1) remove soft hyphen chars everywhere (optional but usually correct)
+    new_chars = []
+    new_map = []
+    for ch, m in zip(text_chars, char_map):
+        if ch == "\u00AD":
+            continue
+        new_chars.append(ch)
+        new_map.append(m)
+
+    text_chars, char_map = new_chars, new_map
+
+    # Helper: match sentinel at a position
+    def match_at(i, needle):
+        if i + len(needle) > len(text_chars):
+            return False
+        return "".join(text_chars[i:i+len(needle)]) == needle
+
+    # 2) main scan
+    out_chars = []
+    out_map = []
+
+    i = 0
+    while i < len(text_chars):
+        # Replace normal LB marker with a single space
+        if match_at(i, LB_NORM):
+            out_chars.append(" ")
+            # Map this space to the first marker char's map entry (good enough)
+            out_map.append(char_map[i])
+            i += len(LB_NORM)
+            continue
+
+        if match_at(i, LB_HYPH):
+            left_ok = len(out_chars) > 0 and _is_word_char(out_chars[-1])
+            j = i + len(LB_HYPH)
+            while j < len(text_chars) and text_chars[j] == " ":
+                j += 1
+            right_ok = j < len(text_chars) and _is_word_char(text_chars[j])
+            if left_ok and right_ok:
+                i = j
+                continue
+            i += len(LB_HYPH)
+            continue
+          
+        # Hyphenation join:
+        # If we see a JOIN_SET char followed (optionally with spaces) by LB_HYPH,
+        # remove the join char + LB_HYPH and surrounding spaces to join words.
+        #
+        # We look for pattern:
+        #   <wordchar> [spaces] <hyphen/dash> [spaces] LB_HYPH [spaces] <wordchar>
+        #
+        # Since we are scanning left-to-right, we'll detect when we're at a hyphen/dash
+        # and see if LB_HYPH comes next.
+        if text_chars[i] in JOIN_SET:
+            # Look ahead skipping spaces
+            j = i + 1
+            while j < len(text_chars) and text_chars[j] == " ":
+                j += 1
+
+            if match_at(j, LB_HYPH):
+                k = j + len(LB_HYPH)
+                while k < len(text_chars) and text_chars[k] == " ":
+                    k += 1
+
+                # Check word chars on both sides
+                left_ok = len(out_chars) > 0 and _is_word_char(out_chars[-1])
+                right_ok = k < len(text_chars) and _is_word_char(text_chars[k])
+
+                if left_ok and right_ok:
+                    # Drop the hyphen/dash and the LB_HYPH marker completely
+                    i = k
+                    continue
+
+        # Also handle case where hyphen is BEFORE spaces already in output
+        # (e.g. "...- ⟦LB_HYPH⟧ ..."): the above handles it because hyphen is current char.
+
+        # Drop standalone LB_HYPH if it survived without a join char (leave as nothing)
+        if match_at(i, LB_HYPH):
+            i += len(LB_HYPH)
+            continue
+
+        # Otherwise, copy char through
+        out_chars.append(text_chars[i])
+        out_map.append(char_map[i])
+        i += 1
+
+    # 3) collapse multiple spaces (keep char_map aligned)
+    final_chars = []
+    final_map = []
+    prev_space = False
+    for ch, m in zip(out_chars, out_map):
+        if ch == " ":
+            if prev_space:
+                continue
+            prev_space = True
+        else:
+            prev_space = False
+        final_chars.append(ch)
+        final_map.append(m)
+
+    # strip leading/trailing space (again keep map aligned)
+    while final_chars and final_chars[0] == " ":
+        final_chars.pop(0); final_map.pop(0)
+    while final_chars and final_chars[-1] == " ":
+        final_chars.pop(); final_map.pop()
+
+    return "".join(final_chars), final_map
 
 def build_entity_map_from_dtd(dtd_path):
     """
@@ -186,13 +311,11 @@ def normalize_paragraph(p_elem):
                 tag = tag.split("}", 1)[1]
 
             if tag == "lb":
-                lb_type = child.get("type")
+                lb_type = (child.get("type") or "").lower()
                 if lb_type == "hyph":
-                    if text_chars and text_chars[-1] == "-":
-                        text_chars.pop()
-                        char_map.pop()
+                    append_literal(" " + LB_HYPH + " ", child, "marker")
                 else:
-                    append_char(" ", child, "lb", 0)
+                    append_literal(" " + LB_NORM + " ", child, "marker")
 
             elif tag == "metamark":
                 # usually safest to skip
@@ -237,7 +360,8 @@ def normalize_paragraph(p_elem):
                     append_char(ch, child, "tail", i)
 
     recurse(p_elem)
-    return "".join(text_chars), char_map
+    text, cmap = postprocess_hyphenation(text_chars, char_map)
+    return text, cmap
 
 def build_inverse_char_map(char_map):
     """
@@ -271,7 +395,7 @@ def map_rs_type_to_label(rs_type):
         "term": "CONCEPT",
     }
     # Unknown or unlisted types fall back to OTHER
-    return mapping.get(rs_type)
+    return mapping.get(rs_type, "OTHER")
 
 
 def get_span_for_rs(rs_elem, idx_map):
@@ -322,7 +446,7 @@ def extract_entities_from_paragraph(p_elem, text, char_map):
     entities = []
 
     for rs in p_elem.xpath(".//tei:rs", namespaces=TEI_NS):
-        rs_type = rs.get("type")
+        rs_type = (rs.get("type") or "").strip().lower()
         label = map_rs_type_to_label(rs_type)
         start, end = get_span_for_rs(rs, idx_map)
         if label is None:

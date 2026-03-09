@@ -1,9 +1,10 @@
 from datasets import load_from_disk
 from collections import Counter
 from pathlib import Path
+import numpy as np
 
 # 1) Point this to your saved dataset folder (the directory that contains train/validation/test)
-DATASET_PATH = r"C:\Users\elena\Documents\WORK\USI\STIL PROJECT\ML\dapt\hf_dataset"  # <-- change this
+DATASET_PATH = r"C:\Users\elena\Documents\WORK\USI\STIL PROJECT\ML\dapt_corpus\hf_dataset"  # <-- change this
 
 # 2) Define labels exactly like in your training script
 TYPES = ["PERSON","PEOPLE","PLACE","ORG","BIBL","ARTEFACT","CONCEPT","OTHER"]
@@ -40,3 +41,23 @@ print("BIBL % of labeled tokens:", (total_bibl_tokens / total_labeled_tokens) if
 print("\nBIBL breakdown:")
 for k, v in bibl_counts.most_common():
     print(f"{k:8s} {v}")
+
+ds = load_from_disk(DATASET_PATH)
+train = ds["train"]
+
+lengths = [len(x) for x in train["input_ids"]]
+arr = np.array(lengths)
+
+print("Train examples:", len(arr))
+print("Min length:", int(arr.min()))
+print("Max length:", int(arr.max()))
+print("Mean length:", float(arr.mean()))
+print("Median length:", float(np.median(arr)))
+print("P90 length:", int(np.percentile(arr, 90)))
+print("P95 length:", int(np.percentile(arr, 95)))
+print("P99 length:", int(np.percentile(arr, 99)))
+
+# Optional: how many hit the chunk length exactly (e.g. 480)
+chunk_len = 480
+print(f"Count == {chunk_len}:", int((arr == chunk_len).sum()))
+print(f"Share == {chunk_len}:", float((arr == chunk_len).mean()))
