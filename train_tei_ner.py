@@ -709,9 +709,12 @@ class TokenClassifierWithCRF(nn.Module):
         if labels is not None:
             # labels: [B, T], with -100 for special/padded tokens
             # CRF needs valid label ids everywhere but a mask to ignore positions.
-            mask = (labels != -100)
+            mask = attention_mask.bool() if attention_mask is not None else (labels != -100)
+            mask[:, 0] = True
             safe_labels = labels.clone()
-            safe_labels[~mask] = 0  # any valid label id; will be ignored by mask
+            ignore = safe_labels == -100
+            safe_labels[ignore] = 0
+            mask = mask & (~ignore)
 
             # CRF returns log-likelihood; we minimize negative log-likelihood
             nll = -self.crf(emissions, safe_labels, mask=mask, reduction="mean")
