@@ -741,7 +741,7 @@ def main(
     weight_decay: float,
     seed: int,
     resume_from_checkpoint: str | None = None,
-    use_crf: bool,
+    use_crf: bool=False,
 ):
     dataset_path = str(Path(dataset_path).expanduser().resolve())
     output_dir = str(Path(output_dir).expanduser().resolve())
