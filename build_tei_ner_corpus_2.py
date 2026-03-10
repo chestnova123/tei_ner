@@ -463,7 +463,7 @@ def extract_entities_from_paragraph(p_elem, text, char_map):
 # ============================================================
 
 
-def spans_to_bilou_chunked(text, entities, tokenizer, label2id, chunk_len=480, stride=128):
+def spans_to_bio_chunked(text, entities, tokenizer, label2id, chunk_len=480, stride=128):
     """
     Tokenize WITHOUT truncation, then create overlapping windows (chunks).
     Returns a list of dicts, each containing input_ids/attention_mask/labels
@@ -594,7 +594,7 @@ def process_document(xml_path, doc_id):
             continue
 
         entities = extract_entities_from_paragraph(p_elem, text, char_map)
-        chunk_encodings = spans_to_bilou_chunked(
+        chunk_encodings = spans_to_bio_chunked(
             text,
             entities,
             tokenizer,

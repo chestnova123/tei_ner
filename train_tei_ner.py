@@ -18,7 +18,7 @@ from seqeval.metrics import (
     f1_score,
     classification_report,
 )
-from seqeval.scheme import BILOU
+from seqeval.scheme import IOB2
 import inspect
 import torch
 from torch.nn import CrossEntropyLoss
@@ -34,6 +34,7 @@ import os
 from torch import nn
 from torchcrf import CRF
 from transformers import AutoModel
+
 
 
 # =====================================================================
@@ -97,13 +98,13 @@ def align_predictions(predictions, label_ids):
 def per_type_scores(labels_list, preds_list):
     """
     Returns dict with per-type precision/recall/f1 from seqeval classification_report.
-    Uses BILOU strict mode.
+    Uses IOB2 strict mode.
     """
     rep = classification_report(
         labels_list,
         preds_list,
         mode="strict",
-        scheme=BILOU,
+        scheme=IOB2,
         output_dict=True,
         zero_division=0,
     )
@@ -162,6 +163,10 @@ def append_metrics_to_csv(
 
 def compute_metrics(eval_pred):
     predictions, labels = eval_pred
+    if hasattr(predictions, "cpu"):
+        predictions = predictions.cpu().numpy()
+    if hasattr(labels, "cpu"):
+        labels = labels.cpu().numpy()
     preds_list, labels_list = align_predictions(predictions, labels)
 
     # DEBUG: inspect what seqeval is seeing
@@ -175,22 +180,20 @@ def compute_metrics(eval_pred):
     # print("DEBUG #gold non-O:", sum(1 for t in flat_gold if t != "O"))
     # print("DEBUG #pred non-O:", sum(1 for t in flat_pred if t != "O"))
     
-    # Tell seqeval explicitly that we are using BILOU, in strict mode.
-    precision = precision_score(labels_list, preds_list, mode="strict", scheme=BILOU)
-    recall = recall_score(labels_list, preds_list, mode="strict", scheme=BILOU)
-    f1 = f1_score(labels_list, preds_list, mode="strict", scheme=BILOU)
+    print("Example gold labels:", labels_list[0][:30])
+    print("Example pred labels:", preds_list[0][:30])
+    # Tell seqeval explicitly that we are using IOB2, in strict mode.
+    precision = precision_score(labels_list, preds_list, mode="strict", scheme=IOB2, zero_division=0)
+    recall = recall_score(labels_list, preds_list, mode="strict", scheme=IOB2, zero_division=0)
+    f1 = f1_score(labels_list, preds_list, mode="strict", scheme=IOB2, zero_division=0)
 
     out = {"precision": precision, "recall": recall, "f1": f1}
     out.update(per_type_scores(labels_list, preds_list))
     return out
 
-import numpy as np
-from collections import Counter
 
 def print_predicted_tag_counts(trainer, dataset, id2label, topk=30):
-    import numpy as np
-    from collections import Counter
-
+    
     pred = trainer.predict(dataset)
     preds = pred.predictions     # could be [N,T,C] (logits) OR [N,T] (decoded ids)
     gold  = pred.label_ids       # [N,T]
@@ -709,7 +712,7 @@ def build_llrd_param_groups(
 class TokenClassifierWithCRF(nn.Module):
     """
     Transformer encoder + linear emissions + CRF.
-    Uses the same label2id/id2label mapping as your script (BILOU + O).
+    Uses the same label2id/id2label mapping as your script (IOB2 + O).
     """
 
     def __init__(self, model_name: str, config: AutoConfig):
@@ -953,7 +956,7 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Train TEI NER model with BILOU labels."
+        description="Train TEI NER model with IOB2 labels."
     )
     parser.add_argument(
         "--dataset_path",
