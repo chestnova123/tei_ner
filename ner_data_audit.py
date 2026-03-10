@@ -72,7 +72,7 @@ def load_model_any(model_path: str):
     cfg.max_position_embeddings = sd["backbone.embeddings.position_embeddings.weight"].shape[0]  # 514
 
     
-    model = TokenClassifierWithCRF(model_path, cfg)
+    model = TokenClassifierWithCRF(cfg)
     model.load_state_dict(sd, strict=False)  
     return tok, model
 
