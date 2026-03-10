@@ -12,8 +12,76 @@ import numpy as np
 import pandas as pd
 import torch
 from datasets import load_from_disk
-from transformers import AutoTokenizer, AutoModelForTokenClassification
+from transformers import AutoTokenizer, AutoModelForTokenClassification, AutoConfig, AutoModel
+from torch import nn
+from torchcrf import CRF
 
+# helpers CRF
+
+import os
+import torch
+from torch import nn
+from transformers import AutoTokenizer, AutoConfig, AutoModel, AutoModelForTokenClassification
+
+try:
+    from torchcrf import CRF  # from pytorch-crf
+except Exception as e:
+    CRF = None
+
+class TokenClassifierWithCRF(nn.Module):
+    def __init__(self, model_name_or_path: str, config: AutoConfig):
+        super().__init__()
+        self.config = config
+        self.num_labels = config.num_labels
+        self.backbone = AutoModel.from_pretrained(model_name_or_path, config=config)
+        self.dropout = nn.Dropout(getattr(config, "hidden_dropout_prob", 0.1))
+        self.classifier = nn.Linear(config.hidden_size, self.num_labels)
+        if CRF is None:
+            raise RuntimeError("torchcrf not available. Install with: pip install pytorch-crf")
+        self.crf = CRF(self.num_labels, batch_first=True)
+
+    def forward(self, input_ids=None, attention_mask=None, **kwargs):
+        out = self.backbone(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
+        x = self.dropout(out.last_hidden_state)
+        emissions = self.classifier(x)
+        # match HF output style
+        return type("Obj", (), {"logits": emissions})
+
+def _load_state_dict(model_path: str) -> dict:
+    bin_path = os.path.join(model_path, "pytorch_model.bin")
+    safe_path = os.path.join(model_path, "model.safetensors")
+
+    if os.path.exists(bin_path):
+        return torch.load(bin_path, map_location="cpu")
+    if os.path.exists(safe_path):
+        from safetensors.torch import load_file
+        return load_file(safe_path)
+
+    raise FileNotFoundError("No pytorch_model.bin or model.safetensors found in model_path")
+
+def load_model_any(model_path: str):
+    tok = AutoTokenizer.from_pretrained(model_path, use_fast=True)
+    cfg = AutoConfig.from_pretrained(model_path)
+    sd = _load_state_dict(model_path)
+
+    is_crf_ckpt = any(k.startswith("crf.") for k in sd.keys()) or any(k.startswith("backbone.") for k in sd.keys())
+
+    if not is_crf_ckpt:
+        # Normal HF token classification checkpoint
+        model = AutoModelForTokenClassification.from_pretrained(model_path)
+        return tok, model
+
+    # CRF checkpoint: ensure num_labels matches checkpoint
+    if getattr(cfg, "id2label", None):
+        cfg.num_labels = len(cfg.id2label)
+    elif "classifier.weight" in sd:
+        cfg.num_labels = sd["classifier.weight"].shape[0]
+    else:
+        raise RuntimeError("Cannot infer num_labels for CRF checkpoint (missing id2label and classifier.weight)")
+
+    model = TokenClassifierWithCRF(model_path, cfg)
+    model.load_state_dict(sd, strict=False)  # strict=False because custom wrapper keys may vary
+    return tok, model
 
 # ----------------------------
 # Helpers: BIO spans from tags
@@ -357,12 +425,10 @@ def main():
     out_dir = Path(args.out_dir) if args.out_dir else Path(args.dataset_path) / "_audit"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.model_path:
-        tokenizer = AutoTokenizer.from_pretrained(args.model_path, use_fast=True)
-        model = AutoModelForTokenClassification.from_pretrained(args.model_path)
-    else:
-        # fallback: try loading tokenizer from dataset info is not reliable; require model_path for token display
+    if not args.model_path:
         raise SystemExit("Please provide --model_path to decode tokens and compute confusion matrix.")
+
+    tokenizer, model = load_model_any(args.model_path)
 
     id2label = id2label_from_dataset_or_model(ds, model)
 
