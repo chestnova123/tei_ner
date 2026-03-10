@@ -33,7 +33,7 @@ class TokenClassifierWithCRF(nn.Module):
         super().__init__()
         self.config = config
         self.num_labels = config.num_labels
-        self.backbone = AutoModel.from_pretrained(model_name_or_path, config=config)
+        self.backbone = AutoModel.from_config(config)
         self.dropout = nn.Dropout(getattr(config, "hidden_dropout_prob", 0.1))
         self.classifier = nn.Linear(config.hidden_size, self.num_labels)
         if CRF is None:
@@ -77,8 +77,12 @@ def load_model_any(model_path: str):
     elif "classifier.weight" in sd:
         cfg.num_labels = sd["classifier.weight"].shape[0]
     else:
-        raise RuntimeError("Cannot infer num_labels for CRF checkpoint (missing id2label and classifier.weight)")
+        raise RuntimeError("Cannot infer num_labels for CRF checkpoint")
 
+    cfg.vocab_size = sd["backbone.embeddings.word_embeddings.weight"].shape[0]
+    cfg.hidden_size = sd["backbone.embeddings.LayerNorm.weight"].shape[0]
+    cfg.max_position_embeddings = sd["backbone.embeddings.position_embeddings.weight"].shape[0]
+    
     model = TokenClassifierWithCRF(model_path, cfg)
     model.load_state_dict(sd, strict=False)  # strict=False because custom wrapper keys may vary
     return tok, model
