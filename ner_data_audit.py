@@ -109,10 +109,7 @@ def load_model_any(model_path: str):
 # ----------------------------
 
 def id2label_from_dataset_or_model(ds, model) -> Dict[int, str]:
-    # Try model config first (most reliable)
-    if hasattr(model, "config") and getattr(model.config, "id2label", None):
-        return {int(k): v for k, v in model.config.id2label.items()}
-    # Fall back to dataset features if present
+    # dataset features
     try:
         feat = ds["train"].features["labels"]
         if hasattr(feat, "feature") and hasattr(feat.feature, "names"):
@@ -120,6 +117,11 @@ def id2label_from_dataset_or_model(ds, model) -> Dict[int, str]:
             return {i: names[i] for i in range(len(names))}
     except Exception:
         pass
+    
+    # fallback to model config
+    if hasattr(model, "config") and getattr(model.config, "id2label", None):
+        return {int(k): v for k, v in model.config.id2label.items()}
+    
     raise RuntimeError("Could not infer id2label mapping. Ensure your model has config.id2label.")
 
 def strip_prefix(tag: str) -> str:
@@ -452,6 +454,16 @@ def main():
     tokenizer, model = load_model_any(args.model_path)
 
     id2label = id2label_from_dataset_or_model(ds, model)
+    
+    # Quick sanity: print label names from dataset and model
+    print("Model num_labels:", getattr(model.config, "num_labels", None))
+    print("Model id2label sample:", list(id2label.items())[:5])
+
+    # Inspect a few label ids from the dataset
+    ex0 = ds["train"][0]["labels"]
+    print("First example label ids (first 50):", ex0[:50])
+    print("Decoded labels (first 50, skipping -100):",
+        [id2label[int(x)] for x in ex0[:50] if x != -100][:30])
 
     # 1) Label counts per split
     lc_train = label_counts(ds["train"], id2label)
@@ -480,7 +492,11 @@ def main():
                 "p99_len": float(np.percentile(a, 99)) if len(a) else 0.0,
                 "max_len": float(a.max()) if len(a) else 0.0,
             })
-        return pd.DataFrame(rows).sort_values(by="n_spans", ascending=False)
+        df = pd.DataFrame(rows)
+        if df.empty:
+            # Return an empty table with expected columns
+            return pd.DataFrame(columns=["type", "n_spans", "mean_len", "median_len", "p90_len", "p99_len", "max_len"])
+        return df.sort_values(by="n_spans", ascending=False)
 
     pd.DataFrame(ent_train.most_common(), columns=["type", "count"]).to_csv(out_dir / "entity_counts_train.csv", index=False)
     pd.DataFrame(ent_val.most_common(), columns=["type", "count"]).to_csv(out_dir / "entity_counts_val.csv", index=False)
