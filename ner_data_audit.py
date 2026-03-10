@@ -14,19 +14,23 @@ import torch
 from datasets import load_from_disk
 from transformers import AutoTokenizer, AutoModelForTokenClassification, AutoConfig, AutoModel
 from torch import nn
-from torchcrf import CRF
-
-# helpers CRF
-
-import os
-import torch
-from torch import nn
-from transformers import AutoTokenizer, AutoConfig, AutoModel, AutoModelForTokenClassification
-
 try:
     from torchcrf import CRF  # from pytorch-crf
 except Exception as e:
     CRF = None
+
+# reconstruct labels
+def make_bio_labels(types):
+    labels = ["O"]
+    for t in types:
+        labels += [f"B-{t}", f"I-{t}"]
+    return labels
+
+def parse_types_csv(s: str):
+    return [x.strip() for x in s.split(",") if x.strip()]
+
+
+# helpers CRF
 
 class TokenClassifierWithCRF(nn.Module):
     def __init__(self, config: AutoConfig):
@@ -436,6 +440,8 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--spans_per_type", type=int, default=100)
     ap.add_argument("--spotcheck_n", type=int, default=20)
+    ap.add_argument("--types", default="PERSON,PEOPLE,PLACE,ORG,BIBL,ARTEFACT,CONCEPT,OTHER", help="Comma-separated entity types in the SAME ORDER used to build the dataset.")
+    ap.add_argument("--scheme", default="bio", choices=["bio"], help="Label scheme used in the dataset (currently only bio).")
     args = ap.parse_args()
 
     random.seed(args.seed)
@@ -453,7 +459,15 @@ def main():
 
     tokenizer, model = load_model_any(args.model_path)
 
-    id2label = id2label_from_dataset_or_model(ds, model)
+    types = parse_types_csv(args.types)
+    labels = make_bio_labels(types)
+    id2label = {i: lab for i, lab in enumerate(labels)}
+
+    # sanity check
+    num_labels_in_model = getattr(model.config, "num_labels", None)
+    if num_labels_in_model is not None and num_labels_in_model != len(labels):
+        print(f"[WARN] model.config.num_labels={num_labels_in_model} but reconstructed labels={len(labels)}")
+    print("Reconstructed labels:", labels)
     
     # Quick sanity: print label names from dataset and model
     print("Model num_labels:", getattr(model.config, "num_labels", None))
