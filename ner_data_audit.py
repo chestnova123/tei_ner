@@ -98,6 +98,7 @@ def load_model_any(model_path: str):
     # infer intermediate size from FFN weight [intermediate, hidden]
     cfg.intermediate_size = sd["backbone.encoder.layer.0.intermediate.dense.weight"].shape[0]
 
+    cfg.type_vocab_size = sd["backbone.embeddings.token_type_embeddings.weight"].shape[0]  # -> 1
     
     model = TokenClassifierWithCRF(cfg)
     model.load_state_dict(sd, strict=False)  
