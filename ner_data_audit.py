@@ -471,7 +471,7 @@ def main():
     
     # Quick sanity: print label names from dataset and model
     print("Model num_labels:", getattr(model.config, "num_labels", None))
-    print("Model id2label sample:", list(id2label.items())[:5])
+    print("Reconstructed id2label sample:", list(id2label.items())[:5])
 
     # Inspect a few label ids from the dataset
     ex0 = ds["train"][0]["labels"]
@@ -493,6 +493,29 @@ def main():
     ent_val, len_val, spans_val = entity_counts_and_lengths(ds["validation"], tokenizer, id2label, "validation")
     ent_test, len_test, spans_test = entity_counts_and_lengths(ds["test"], tokenizer, id2label, "test")
 
+    def dump_long_spans(spans, out_path, min_len=200, types=("BIBL","PLACE"), max_per_type=200):
+        by_type = defaultdict(list)
+        for sp in spans:
+            if sp.ent_type in types and sp.token_len >= min_len:
+                by_type[sp.ent_type].append(sp)
+
+        with open(out_path, "w", encoding="utf-8") as f:
+            for t in types:
+                arr = sorted(by_type.get(t, []), key=lambda s: s.token_len, reverse=True)
+                f.write(f"\n### {t}: {len(arr)} spans with len>={min_len}\n")
+                for sp in arr[:max_per_type]:
+                    f.write(f"[ex={sp.example_idx} len={sp.token_len}] {sp.token_text}\n")
+
+    dump_long_spans(
+        spans_train,
+        out_dir / "long_spans_train_BIBL_PLACE.txt",
+        min_len=200,
+        types=("BIBL","PLACE"),
+        max_per_type=300
+        )
+    print("Wrote:", out_dir / "long_spans_train_BIBL_PLACE.txt")
+    
+    
     def length_stats(lengths_by_type: Dict[str, List[int]]) -> pd.DataFrame:
         rows = []
         for t, arr in lengths_by_type.items():
