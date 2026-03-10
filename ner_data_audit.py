@@ -66,10 +66,37 @@ def load_model_any(model_path: str):
 
     is_crf_ckpt = any(k.startswith("crf.") for k in sd.keys()) or any(k.startswith("backbone.") for k in sd.keys())
 
+    # infer hidden size / vocab / pos from tensors
     cfg.num_labels = sd["classifier.weight"].shape[0]                 # 17
     cfg.hidden_size = sd["classifier.weight"].shape[1]                # 1024
     cfg.vocab_size = sd["backbone.embeddings.word_embeddings.weight"].shape[0]  # 250010
     cfg.max_position_embeddings = sd["backbone.embeddings.position_embeddings.weight"].shape[0]  # 514
+
+    # infer num_hidden_layers
+    # backbone.encoder.layer.0.... exists up to layer N-1
+    layer_ids = set()
+    for k in sd.keys():
+        if k.startswith("backbone.encoder.layer."):
+            # k like backbone.encoder.layer.23.attention.self.query.weight
+            parts = k.split(".")
+            if len(parts) > 3 and parts[3].isdigit():
+                layer_ids.add(int(parts[3]))
+    cfg.num_hidden_layers = max(layer_ids) + 1 if layer_ids else getattr(cfg, "num_hidden_layers", 24)
+
+    # infer num_attention_heads from query weight shape [hidden, hidden]
+    # Choose a standard head dim (64) if possible
+    # For XLM-R large: hidden=1024 => heads=16
+    if cfg.hidden_size % 64 == 0:
+        cfg.num_attention_heads = cfg.hidden_size // 64
+    else:
+        # fallback to 16 if divisible, else 8
+        for h in (16, 8, 12):
+            if cfg.hidden_size % h == 0:
+                cfg.num_attention_heads = h
+                break
+
+    # infer intermediate size from FFN weight [intermediate, hidden]
+    cfg.intermediate_size = sd["backbone.encoder.layer.0.intermediate.dense.weight"].shape[0]
 
     
     model = TokenClassifierWithCRF(cfg)
