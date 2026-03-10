@@ -29,7 +29,7 @@ except Exception as e:
     CRF = None
 
 class TokenClassifierWithCRF(nn.Module):
-    def __init__(self, model_name_or_path: str, config: AutoConfig):
+    def __init__(self, config: AutoConfig):
         super().__init__()
         self.config = config
         self.num_labels = config.num_labels
@@ -66,25 +66,14 @@ def load_model_any(model_path: str):
 
     is_crf_ckpt = any(k.startswith("crf.") for k in sd.keys()) or any(k.startswith("backbone.") for k in sd.keys())
 
-    if not is_crf_ckpt:
-        # Normal HF token classification checkpoint
-        model = AutoModelForTokenClassification.from_pretrained(model_path)
-        return tok, model
+    cfg.num_labels = sd["classifier.weight"].shape[0]                 # 17
+    cfg.hidden_size = sd["classifier.weight"].shape[1]                # 1024
+    cfg.vocab_size = sd["backbone.embeddings.word_embeddings.weight"].shape[0]  # 250010
+    cfg.max_position_embeddings = sd["backbone.embeddings.position_embeddings.weight"].shape[0]  # 514
 
-    # CRF checkpoint: ensure num_labels matches checkpoint
-    if getattr(cfg, "id2label", None):
-        cfg.num_labels = len(cfg.id2label)
-    elif "classifier.weight" in sd:
-        cfg.num_labels = sd["classifier.weight"].shape[0]
-    else:
-        raise RuntimeError("Cannot infer num_labels for CRF checkpoint")
-
-    cfg.vocab_size = sd["backbone.embeddings.word_embeddings.weight"].shape[0]
-    cfg.hidden_size = sd["backbone.embeddings.LayerNorm.weight"].shape[0]
-    cfg.max_position_embeddings = sd["backbone.embeddings.position_embeddings.weight"].shape[0]
     
     model = TokenClassifierWithCRF(model_path, cfg)
-    model.load_state_dict(sd, strict=False)  # strict=False because custom wrapper keys may vary
+    model.load_state_dict(sd, strict=False)  
     return tok, model
 
 # ----------------------------
