@@ -669,13 +669,7 @@ def split_by_document_stratified(
     dev_ratio=0.15,
     test_ratio=0.15,
 ):
-    """
-    Doc-level split that tries to match overall LABEL proportions across splits.
-    Uses token-label counts from ex["labels"] (excluding -100).
-    Greedy assignment with token-budget constraints.
-    """
     assert abs(train_ratio + dev_ratio + test_ratio - 1.0) < 1e-6
-
     random.seed(RANDOM_SEED)
 
     # --- aggregate label counts per doc ---
@@ -684,14 +678,19 @@ def split_by_document_stratified(
 
     for ex in examples:
         d = ex["doc_id"]
-        for lab in ex["labels"]:
+        labs = ex["labels"]
+        for lab in labs:
             if lab == -100:
                 continue
             doc_label_counts[d][lab] += 1
             doc_token_totals[d] += 1
 
     doc_ids = list(doc_label_counts.keys())
-    random.shuffle(doc_ids)
+    if len(doc_ids) < 3:
+        # fallback: not enough docs to make 3-way split
+        random.shuffle(doc_ids)
+        train_docs = set(doc_ids)
+        return [ex for ex in examples if ex["doc_id"] in train_docs], [], []
 
     # global target distribution
     global_counts = Counter()
@@ -709,9 +708,9 @@ def split_by_document_stratified(
 
     # token budgets per split
     target_tokens = {
-        "train": global_total * train_ratio,
-        "validation": global_total * dev_ratio,
-        "test": global_total * test_ratio,
+        "train": int(global_total * train_ratio),
+        "validation": int(global_total * dev_ratio),
+        "test": int(global_total * test_ratio),
     }
 
     splits = {
@@ -727,21 +726,41 @@ def split_by_document_stratified(
         keys = set(target.keys()) | set(p.keys())
         return sum(abs(p.get(k, 0.0) - target.get(k, 0.0)) for k in keys)
 
-    # Greedy assignment: put each doc into the split that best preserves target distribution
-    for d in doc_ids:
-        best_split = None
-        best_score = None
+    # ---- deterministic, stable doc order: big docs first ----
+    doc_ids_sorted = sorted(doc_ids, key=lambda d: doc_token_totals[d], reverse=True)
 
+    # ---- seed each split so none is empty ----
+    seed_order = ["train", "validation", "test"]
+    for sname, d in zip(seed_order, doc_ids_sorted[:3]):
+        splits[sname]["docs"].add(d)
+        splits[sname]["counts"].update(doc_label_counts[d])
+        splits[sname]["tokens"] += doc_token_totals[d]
+
+    remaining = doc_ids_sorted[3:]
+
+    # ---- greedy assignment with remaining-budget preference ----
+    for d in remaining:
         d_counts = doc_label_counts[d]
         d_tokens = doc_token_totals[d]
 
+        best_split = None
+        best_score = None
+
         for sname in ("train", "validation", "test"):
-            # soft budget: discourage going too far beyond target tokens
             projected_tokens = splits[sname]["tokens"] + d_tokens
-            budget_penalty = max(0.0, projected_tokens - target_tokens[sname]) / max(1.0, target_tokens[sname])
+            remaining_budget = target_tokens[sname] - splits[sname]["tokens"]
+
+            # Prefer splits that still have budget left.
+            # If remaining_budget is negative, penalize heavily.
+            over = max(0, projected_tokens - target_tokens[sname])
+            budget_penalty = (over / max(1, target_tokens[sname]))  # 0 if within budget
 
             projected_counts = splits[sname]["counts"] + d_counts
-            score = l1_to_target(projected_counts, projected_tokens) + 0.25 * budget_penalty
+            score = l1_to_target(projected_counts, projected_tokens) + 2.0 * budget_penalty
+
+            # Extra soft preference: if split still has room, subtract a tiny bonus
+            if remaining_budget > 0:
+                score -= 0.01
 
             if best_score is None or score < best_score:
                 best_score = score
@@ -760,16 +779,11 @@ def split_by_document_stratified(
     dev_examples = [ex for ex in examples if ex["doc_id"] in dev_docs]
     test_examples = [ex for ex in examples if ex["doc_id"] in test_docs]
 
-    # Print summary drift (token-level)
-    def print_split_summary(name: str):
+    print("\n=== Stratified split summary (token-label distribution) ===")
+    for name in ("train", "validation", "test"):
         c = splits[name]["counts"]
         tot = splits[name]["tokens"]
-        print(f"{name:10s} docs={len(splits[name]['docs']):4d}  tokens={tot:8d}  L1={l1_to_target(c, tot):.4f}")
-
-    print("\n=== Stratified split summary (token-label distribution) ===")
-    print_split_summary("train")
-    print_split_summary("validation")
-    print_split_summary("test")
+        print(f"{name:10s} docs={len(splits[name]['docs']):4d} tokens={tot:8d} L1={l1_to_target(c, tot):.4f}")
 
     return train_examples, dev_examples, test_examples
 
@@ -821,7 +835,9 @@ def build_and_save_corpus(root_dir, out_dir):
     print(f"Total examples: {len(examples)}")
 
     train_ex, dev_ex, test_ex = split_by_document_stratified(examples)
-    print(f"Train: {len(train_ex)}, Dev: {len(dev_ex)}, Test: {len(test_ex)}")
+    print("Split sizes:", len(train_ex), len(dev_ex), len(test_ex))
+    if len(dev_ex) == 0 or len(test_ex) == 0:
+        raise RuntimeError("Split produced empty dev/test — check doc_id diversity and split logic.")
 
     # Save JSONL
     write_jsonl(train_ex, out_dir / "train.jsonl")
