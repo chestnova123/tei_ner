@@ -168,13 +168,18 @@ def bio_spans_from_labels(tokens: List[str], tags: List[str]) -> List[Tuple[int,
             i += 1
     return spans
 
-def join_tokens_for_display(tok_list: List[str]) -> str:
-    # Tokenizer-dependent; "▁" (sentencepiece) indicates word starts in XLM-R.
-    # We'll make it readable by replacing ▁ with space and collapsing.
-    s = "".join(tok_list)
-    s = s.replace("▁", " ")
-    s = " ".join(s.split())
-    return s.strip()
+def join_tokens_for_display(tokenizer, tok_list: List[str]) -> str:
+    """
+    Convert tokens back to readable text.
+    Works for byte-level BPE (RoBERTa) and SentencePiece (XLM-R).
+    """
+    if tokenizer is None:
+        # fallback
+        s = "".join(tok_list).replace("▁", " ")
+        return " ".join(s.split()).strip()
+
+    s = tokenizer.convert_tokens_to_string(tok_list)
+    return " ".join(s.split()).strip()
 
 def detect_marker(token_str: str) -> bool:
     # catches your literal markers like ⟦ADD⟧, ⟦DEL⟧, ⟦HI⟧, ⟦LAT⟧, ⟦KUR⟧
@@ -282,7 +287,7 @@ def entity_counts_and_lengths(ds_split, tokenizer, id2label: Dict[int, str], spl
         for s, e, t in spans:
             ent_counts[t] += 1
             lengths_by_type[t].append(e - s)
-            span_text = join_tokens_for_display(toks_f[s:e])
+            span_text = join_tokens_for_display(tokenizer, toks_f[s:e])
             all_spans.append(Span(split_name, idx, s, e, t, span_text, e - s))
 
     return ent_counts, lengths_by_type, all_spans
@@ -421,7 +426,7 @@ def alignment_spotcheck(ds_split, tokenizer, id2label: Dict[int, str], split_nam
             "type": sp.ent_type,
             "span_token_len": sp.token_len,
             "span_text": sp.token_text,
-            "context_tokens": join_tokens_for_display(ctx_tokens),
+            "context_tokens": join_tokens_for_display(tokenizer, ctx_tokens),
             "context_tags": " ".join(ctx_tags),
         })
     return picks
