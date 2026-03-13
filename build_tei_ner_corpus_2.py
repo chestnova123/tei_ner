@@ -9,6 +9,7 @@ from lxml.etree import XMLSyntaxError
 
 from transformers import AutoTokenizer
 from datasets import Dataset, DatasetDict
+from collections import Counter, defaultdict
 
 # version 2.0. Adapts the extraction process to keep structural information in the extracting text by marking edits.
 
@@ -72,6 +73,17 @@ TEI_NS = {"tei": "http://www.tei-c.org/ns/1.0"}
 
 # Path to Zeichen.dtd
 ENTITIES_DTD_PATH = r"C:\Users\elena\Documents\GitHub\semper-tei_new\scripts\R_transformer_based_entity_prediction\extraction_test\test_in\Zeichen.dtd"
+
+# Max allowed entity span length in TOKENS (per chunk). Spans longer than this are dropped to O.
+MAX_SPAN_TOKENS = {
+    "BIBL": 40,
+    "PLACE": 10,
+    "ARTEFACT": 10,
+}
+
+# Logging for capped/dropped spans
+CAP_LOG_SPANS = Counter()   # how many spans dropped per type
+CAP_LOG_TOKENS = Counter()  # how many tokens dropped per type
 
 def postprocess_hyphenation(text_chars, char_map):
     """
@@ -484,8 +496,8 @@ def spans_to_bio_chunked(text, entities, tokenizer, label2id, chunk_len=480, str
     # Keep special tokens in place; offsets for special tokens are (0,0).
     n = len(input_ids_all)
 
-    # Helper: build token-level BILOU tags for a given offset list
-    def bilou_for_offsets(offsets):
+    # Helper: build token-level BIO tags for a given offset list
+    def bio_for_offsets(offsets):
         token_tags = ["O"] * len(offsets)
 
         for ent in entities:
@@ -502,7 +514,16 @@ def spans_to_bio_chunked(text, entities, tokenizer, label2id, chunk_len=480, str
             if not token_indices:
                 continue
 
-            # BIO tagging
+            ent_type = ent_type.upper()
+            cap = MAX_SPAN_TOKENS.get(ent_type)
+
+            # If span too long, drop ENTIRE span to O (i.e., do not assign any labels)
+            if cap is not None and len(token_indices) > cap:
+                CAP_LOG_SPANS[ent_type] += 1
+                CAP_LOG_TOKENS[ent_type] += len(token_indices)
+                continue
+
+            # Otherwise normal BIO tagging
             token_tags[token_indices[0]] = f"B-{ent_type}"
             for ti in token_indices[1:]:
                 token_tags[ti] = f"I-{ent_type}"
@@ -525,7 +546,7 @@ def spans_to_bio_chunked(text, entities, tokenizer, label2id, chunk_len=480, str
         chunk_offsets = offsets_all[start:end]
 
         # Compute labels for this chunk
-        chunk_labels = bilou_for_offsets(chunk_offsets)
+        chunk_labels = bio_for_offsets(chunk_offsets)
 
         # Pad to chunk_len so trainer batches cleanly (optional but convenient)
         pad_id = tokenizer.pad_token_id
@@ -638,31 +659,117 @@ def load_corpus(root_dir):
 
 
 # ============================================================
-# 6. Train/dev/test split (by document)
+# 6. Train/dev/test split (by document, stratified)
 # ============================================================
 
 
-def split_by_document(examples, train_ratio=0.7, dev_ratio=0.15, test_ratio=0.15):
+def split_by_document_stratified(
+    examples,
+    train_ratio=0.7,
+    dev_ratio=0.15,
+    test_ratio=0.15,
+):
     """
-    Split examples by doc_id to avoid leakage between train/dev/test.
-    Ratios must sum to 1.0 (approximately).
+    Doc-level split that tries to match overall LABEL proportions across splits.
+    Uses token-label counts from ex["labels"] (excluding -100).
+    Greedy assignment with token-budget constraints.
     """
+    assert abs(train_ratio + dev_ratio + test_ratio - 1.0) < 1e-6
+
     random.seed(RANDOM_SEED)
-    doc_ids = sorted({ex["doc_id"] for ex in examples})
+
+    # --- aggregate label counts per doc ---
+    doc_label_counts = defaultdict(Counter)
+    doc_token_totals = Counter()
+
+    for ex in examples:
+        d = ex["doc_id"]
+        for lab in ex["labels"]:
+            if lab == -100:
+                continue
+            doc_label_counts[d][lab] += 1
+            doc_token_totals[d] += 1
+
+    doc_ids = list(doc_label_counts.keys())
     random.shuffle(doc_ids)
 
-    n_docs = len(doc_ids)
-    n_train = int(n_docs * train_ratio)
-    n_dev = int(n_docs * dev_ratio)
-    # rest go to test
+    # global target distribution
+    global_counts = Counter()
+    global_total = 0
+    for d in doc_ids:
+        global_counts.update(doc_label_counts[d])
+        global_total += doc_token_totals[d]
 
-    train_docs = set(doc_ids[:n_train])
-    dev_docs = set(doc_ids[n_train : n_train + n_dev])
-    test_docs = set(doc_ids[n_train + n_dev :])
+    def dist(counter: Counter, total: int):
+        if total <= 0:
+            return {}
+        return {k: v / total for k, v in counter.items()}
+
+    target = dist(global_counts, global_total)
+
+    # token budgets per split
+    target_tokens = {
+        "train": global_total * train_ratio,
+        "validation": global_total * dev_ratio,
+        "test": global_total * test_ratio,
+    }
+
+    splits = {
+        "train": {"docs": set(), "counts": Counter(), "tokens": 0},
+        "validation": {"docs": set(), "counts": Counter(), "tokens": 0},
+        "test": {"docs": set(), "counts": Counter(), "tokens": 0},
+    }
+
+    def l1_to_target(counts: Counter, total_tokens: int) -> float:
+        if total_tokens <= 0:
+            return 1e9
+        p = dist(counts, total_tokens)
+        keys = set(target.keys()) | set(p.keys())
+        return sum(abs(p.get(k, 0.0) - target.get(k, 0.0)) for k in keys)
+
+    # Greedy assignment: put each doc into the split that best preserves target distribution
+    for d in doc_ids:
+        best_split = None
+        best_score = None
+
+        d_counts = doc_label_counts[d]
+        d_tokens = doc_token_totals[d]
+
+        for sname in ("train", "validation", "test"):
+            # soft budget: discourage going too far beyond target tokens
+            projected_tokens = splits[sname]["tokens"] + d_tokens
+            budget_penalty = max(0.0, projected_tokens - target_tokens[sname]) / max(1.0, target_tokens[sname])
+
+            projected_counts = splits[sname]["counts"] + d_counts
+            score = l1_to_target(projected_counts, projected_tokens) + 0.25 * budget_penalty
+
+            if best_score is None or score < best_score:
+                best_score = score
+                best_split = sname
+
+        splits[best_split]["docs"].add(d)
+        splits[best_split]["counts"].update(d_counts)
+        splits[best_split]["tokens"] += d_tokens
+
+    # materialize examples
+    train_docs = splits["train"]["docs"]
+    dev_docs = splits["validation"]["docs"]
+    test_docs = splits["test"]["docs"]
 
     train_examples = [ex for ex in examples if ex["doc_id"] in train_docs]
     dev_examples = [ex for ex in examples if ex["doc_id"] in dev_docs]
     test_examples = [ex for ex in examples if ex["doc_id"] in test_docs]
+
+    # Print summary drift (token-level)
+    def print_split_summary(name: str):
+        c = splits[name]["counts"]
+        tot = splits[name]["tokens"]
+        print(f"{name:10s} docs={len(splits[name]['docs']):4d}  tokens={tot:8d}  L1={l1_to_target(c, tot):.4f}")
+
+    print("\n=== Stratified split summary (token-label distribution) ===")
+    print_split_summary("train")
+    print_split_summary("validation")
+    print_split_summary("test")
 
     return train_examples, dev_examples, test_examples
 
@@ -713,7 +820,7 @@ def build_and_save_corpus(root_dir, out_dir):
     examples = load_corpus(root_dir)
     print(f"Total examples: {len(examples)}")
 
-    train_ex, dev_ex, test_ex = split_by_document(examples)
+    train_ex, dev_ex, test_ex = split_by_document_stratified(examples)
     print(f"Train: {len(train_ex)}, Dev: {len(dev_ex)}, Test: {len(test_ex)}")
 
     # Save JSONL
@@ -738,6 +845,30 @@ def build_and_save_corpus(root_dir, out_dir):
     # Save HF dataset to disk
     ds_dict.save_to_disk(str(out_dir / "hf_dataset"))
     print(f"Saved HF Dataset to {out_dir / 'hf_dataset'}")
+    
+    # --- Report capping ---
+    print("\n=== Span capping report (dropped to O) ===")
+    total_spans = sum(CAP_LOG_SPANS.values())
+    total_tokens = sum(CAP_LOG_TOKENS.values())
+    print(f"Total spans dropped: {total_spans}")
+    print(f"Total tokens dropped: {total_tokens}")
+
+    for t in sorted(CAP_LOG_SPANS.keys()):
+        print(f"{t:10s} spans={CAP_LOG_SPANS[t]:6d}  tokens={CAP_LOG_TOKENS[t]:8d}")
+
+    # Save as JSON for reproducibility
+    cap_report = {
+        "max_span_tokens": MAX_SPAN_TOKENS,
+        "dropped_spans": dict(CAP_LOG_SPANS),
+        "dropped_tokens": dict(CAP_LOG_TOKENS),
+        "total_dropped_spans": total_spans,
+        "total_dropped_tokens": total_tokens,
+    }
+    with open(out_dir / "span_capping_report.json", "w", encoding="utf-8") as f:
+        json.dump(cap_report, f, ensure_ascii=False, indent=2)
+
+    print(f"Wrote: {out_dir / 'span_capping_report.json'}")
+
 
 
 # ============================================================
