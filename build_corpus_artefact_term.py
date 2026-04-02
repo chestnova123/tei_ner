@@ -228,6 +228,13 @@ def expand_custom_entities(xml_text, entity_map):
 
 
 # sanitize text
+def remove_xml_comments(xml_text):
+    """
+    Remove XML comments so that commented-out content does not enter the corpus.
+    Works across multiple lines.
+    """
+    return re.sub(r"<!--.*?-->", "", xml_text, flags=re.DOTALL)
+
 def escape_lt_in_any_quotes(xml_text):
     """
     Replace any '<' inside either single or double quoted strings with '&lt;'.
@@ -578,6 +585,9 @@ def process_document(xml_path, doc_id):
 
     # 1) Read raw XML file as text
     xml_text = Path(xml_path).read_text(encoding="utf-8", errors="ignore")
+    
+    # 1b) Remove XML comments completely
+    xml_text = remove_xml_comments(xml_text)
 
     # 2) Sanitize entities and ampersands
     xml_text = sanitize_xml_text(xml_text, ENTITY_MAP)

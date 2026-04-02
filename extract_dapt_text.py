@@ -59,6 +59,13 @@ def normalize_text(s: str) -> str:
     s = re.sub(r"\s+", " ", s)
     return s.strip()
 
+def remove_xml_comments(xml_text: str) -> str:
+    """
+    Remove anything inside XML comments: <!-- ... -->
+    Works across multiple lines.
+    """
+    return re.sub(r"<!--.*?-->", "", xml_text, flags=re.DOTALL)
+
 
 def paragraph_to_text(p_elem: etree._Element) -> str:
     """Flatten a TEI <p> into text, similar to your NER corpus normalizer."""
@@ -146,6 +153,9 @@ def paragraph_to_text(p_elem: etree._Element) -> str:
 def extract_paragraphs_from_file(xml_path: Path) -> list[str]:
     xml_text = xml_path.read_text(encoding="utf-8", errors="ignore")
 
+    # remove commented-out XML so it never enters the corpus
+    xml_text = remove_xml_comments(xml_text)
+    
     # parse without loading DTDs
     parser = etree.XMLParser(load_dtd=False, resolve_entities=False, no_network=True, recover=True)
     root = etree.fromstring(xml_text.encode("utf-8"), parser=parser)
