@@ -30,7 +30,7 @@ def _is_word_char(ch: str) -> bool:
     # matches letters/digits/underscore; good enough for joining
     return ch.isalnum() or ch == "_"
 
-MODEL_NAME = r"C:\Users\elena\Documents\WORK\USI\STIL PROJECT\ML\dapt_model_bio"  # or another HF model
+MODEL_NAME = r"C:\Users\elena\Documents\WORK\USI\STIL PROJECT\ML\dapt_model"  # or another HF model
 MAX_LENGTH = 512  # truncation length
 RANDOM_SEED = 42
 CHUNK_LEN = 480        # model input length per chunk (<=512)
