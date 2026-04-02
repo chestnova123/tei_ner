@@ -2,7 +2,7 @@ import re
 import json
 import random
 from pathlib import Path
-
+import math
 
 from lxml import etree
 from lxml.etree import XMLSyntaxError
@@ -11,12 +11,13 @@ from transformers import AutoTokenizer
 from datasets import Dataset, DatasetDict
 from collections import Counter, defaultdict
 
-# version 2.0. Adapts the extraction process to keep structural information in the extracting text by marking edits.
+# version 3.0.1 - limiting the corpus to only artefacts and terms
 
 # ============================================================
 # 1. Global config
 # ============================================================
 
+GROUP_BLOCK_SIZE = 4
 LB_HYPH = "⟦LB_HYPH⟧"
 LB_NORM = "⟦LB⟧"
 
@@ -29,7 +30,7 @@ def _is_word_char(ch: str) -> bool:
     # matches letters/digits/underscore; good enough for joining
     return ch.isalnum() or ch == "_"
 
-MODEL_NAME = r"C:\Users\elena\Documents\WORK\USI\STIL PROJECT\ML\dapt\model_rxlm_large_dapt"  # or another HF model
+MODEL_NAME = r"C:\Users\elena\Documents\WORK\USI\STIL PROJECT\ML\dapt_model_bio"  # or another HF model
 MAX_LENGTH = 512  # truncation length
 RANDOM_SEED = 42
 CHUNK_LEN = 480        # model input length per chunk (<=512)
@@ -47,14 +48,8 @@ LAT_MARK, KUR_MARK = " ⟦LAT⟧ ", " ⟦KUR⟧ "
 
 # Final entity types
 TYPES = [
-    "PERSON",
-    "PEOPLE",
-    "PLACE",
-    "ORG",
-    "BIBL",
     "ARTEFACT",
     "CONCEPT",
-    "OTHER",
 ]
 
 # BIO label set
@@ -72,13 +67,12 @@ TEI_NS = {"tei": "http://www.tei-c.org/ns/1.0"}
 # expansion of xml entitites
 
 # Path to Zeichen.dtd
-ENTITIES_DTD_PATH = r"C:\Users\elena\Documents\GitHub\semper-tei_new\scripts\R_transformer_based_entity_prediction\extraction_test\test_in\Zeichen.dtd"
+ENTITIES_DTD_PATH = r"C:\Users\elena\Documents\WORK\USI\STIL PROJECT\ML\training_data_filtered\Zeichen.dtd"
 
 # Max allowed entity span length in TOKENS (per chunk). Spans longer than this are dropped to O.
 MAX_SPAN_TOKENS = {
-    "BIBL": 40,
-    "PLACE": 10,
-    "ARTEFACT": 10,
+    "CONCEPT": 40,
+    "ARTEFACT": 40,
 }
 
 # Logging for capped/dropped spans
@@ -392,23 +386,17 @@ def build_inverse_char_map(char_map):
 
 def map_rs_type_to_label(rs_type):
     """
-    Map TEI rs/@type to NER label types (without BILOU prefix).
+    Map TEI rs/@type to NER label types (without BIO prefix).
+    Keep only artefact and term entities.
+    Return None for everything else so it is ignored.
     """
     mapping = {
-        "person": "PERSON",
-        "people": "PEOPLE",
-        "place": "PLACE",
-        "organisation": "ORG",
-        "org": "ORG",
-        "bibl": "BIBL",
         "artefact": "ARTEFACT",
         "artifact": "ARTEFACT",
-        "concept": "CONCEPT",
         "term": "CONCEPT",
+        "concept": "CONCEPT",
     }
-    # Unknown or unlisted types fall back to OTHER
-    return mapping.get(rs_type, "OTHER")
-
+    return mapping.get(rs_type)
 
 def get_span_for_rs(rs_elem, idx_map):
     """
@@ -448,11 +436,7 @@ def extract_entities_from_paragraph(p_elem, text, char_map):
     Given a TEI <p>, its normalized text and char_map, extract gold entities
     from <rs> tags as char spans.
 
-    Returns
-    -------
-    entities : list of dict
-        Each dict has {"start", "end", "label"}.
-        label is the TYPE (e.g. "PERSON", "PLACE", "BIBL", ...).
+    Keeps only artefact and term/concept entities.
     """
     idx_map = build_inverse_char_map(char_map)
     entities = []
@@ -460,18 +444,19 @@ def extract_entities_from_paragraph(p_elem, text, char_map):
     for rs in p_elem.xpath(".//tei:rs", namespaces=TEI_NS):
         rs_type = (rs.get("type") or "").strip().lower()
         label = map_rs_type_to_label(rs_type)
-        start, end = get_span_for_rs(rs, idx_map)
+
         if label is None:
             continue
+
+        start, end = get_span_for_rs(rs, idx_map)
         if start is not None and end is not None and start < end:
             entities.append({"start": start, "end": end, "label": label})
 
     entities.sort(key=lambda e: e["start"])
     return entities
 
-
 # ============================================================
-# 4. Char-spans to BILOU token labels
+# 4. Char-spans to BIO oken labels
 # ============================================================
 
 
@@ -631,6 +616,7 @@ def process_document(xml_path, doc_id):
                 "doc_id": doc_id,
                 "p_index": p_idx,
                 "chunk_index": c_idx,
+                "group_id": f"{doc_id}::{p_idx}::{c_idx // GROUP_BLOCK_SIZE}",
                 "chunk_start": encoding["chunk_start"],
                 "chunk_end": encoding["chunk_end"],
                 "input_ids": encoding["input_ids"],
@@ -638,8 +624,6 @@ def process_document(xml_path, doc_id):
                 "labels": encoding["labels"],
             }
             examples.append(example)
-
-
     return examples
 
 
@@ -655,137 +639,48 @@ def load_corpus(root_dir):
     for doc_id, path in enumerate(xml_files):
         doc_examples = process_document(path, doc_id)
         all_examples.extend(doc_examples)
+    
     return all_examples
 
 
 # ============================================================
-# 6. Train/dev/test split (by document, stratified)
+# 6. Train/dev/test split
 # ============================================================
-
-
-def split_by_document_stratified(
+def simple_train_dev_test_split(
     examples,
     train_ratio=0.7,
     dev_ratio=0.15,
     test_ratio=0.15,
+    group_field="group_id",
+    seed=42,
 ):
+    """
+    Simple random split by group_id so related chunks stay together.
+    """
     assert abs(train_ratio + dev_ratio + test_ratio - 1.0) < 1e-6
-    random.seed(RANDOM_SEED)
 
-    # --- aggregate label counts per doc ---
-    doc_label_counts = defaultdict(Counter)
-    doc_token_totals = Counter()
+    rng = random.Random(seed)
 
-    for ex in examples:
-        d = ex["doc_id"]
-        labs = ex["labels"]
-        for lab in labs:
-            if lab == -100:
-                continue
-            doc_label_counts[d][lab] += 1
-            doc_token_totals[d] += 1
+    groups = sorted({ex[group_field] for ex in examples})
+    rng.shuffle(groups)
 
-    doc_ids = list(doc_label_counts.keys())
-    if len(doc_ids) < 3:
-        # fallback: not enough docs to make 3-way split
-        random.shuffle(doc_ids)
-        train_docs = set(doc_ids)
-        return [ex for ex in examples if ex["doc_id"] in train_docs], [], []
+    n = len(groups)
+    n_train = int(n * train_ratio)
+    n_dev = int(n * dev_ratio)
 
-    # global target distribution
-    global_counts = Counter()
-    global_total = 0
-    for d in doc_ids:
-        global_counts.update(doc_label_counts[d])
-        global_total += doc_token_totals[d]
+    train_groups = set(groups[:n_train])
+    dev_groups = set(groups[n_train:n_train + n_dev])
+    test_groups = set(groups[n_train + n_dev:])
 
-    def dist(counter: Counter, total: int):
-        if total <= 0:
-            return {}
-        return {k: v / total for k, v in counter.items()}
+    train = [ex for ex in examples if ex[group_field] in train_groups]
+    dev = [ex for ex in examples if ex[group_field] in dev_groups]
+    test = [ex for ex in examples if ex[group_field] in test_groups]
 
-    target = dist(global_counts, global_total)
+    print("\n=== Simple split summary ===")
+    print(f"Groups: train={len(train_groups)}, validation={len(dev_groups)}, test={len(test_groups)}")
+    print(f"Examples: train={len(train)}, validation={len(dev)}, test={len(test)}")
 
-    # token budgets per split
-    target_tokens = {
-        "train": int(global_total * train_ratio),
-        "validation": int(global_total * dev_ratio),
-        "test": int(global_total * test_ratio),
-    }
-
-    splits = {
-        "train": {"docs": set(), "counts": Counter(), "tokens": 0},
-        "validation": {"docs": set(), "counts": Counter(), "tokens": 0},
-        "test": {"docs": set(), "counts": Counter(), "tokens": 0},
-    }
-
-    def l1_to_target(counts: Counter, total_tokens: int) -> float:
-        if total_tokens <= 0:
-            return 1e9
-        p = dist(counts, total_tokens)
-        keys = set(target.keys()) | set(p.keys())
-        return sum(abs(p.get(k, 0.0) - target.get(k, 0.0)) for k in keys)
-
-    # ---- deterministic, stable doc order: big docs first ----
-    doc_ids_sorted = sorted(doc_ids, key=lambda d: doc_token_totals[d], reverse=True)
-
-    # ---- seed each split so none is empty ----
-    seed_order = ["train", "validation", "test"]
-    for sname, d in zip(seed_order, doc_ids_sorted[:3]):
-        splits[sname]["docs"].add(d)
-        splits[sname]["counts"].update(doc_label_counts[d])
-        splits[sname]["tokens"] += doc_token_totals[d]
-
-    remaining = doc_ids_sorted[3:]
-
-    # ---- greedy assignment with remaining-budget preference ----
-    for d in remaining:
-        d_counts = doc_label_counts[d]
-        d_tokens = doc_token_totals[d]
-
-        best_split = None
-        best_score = None
-
-        for sname in ("train", "validation", "test"):
-            projected_tokens = splits[sname]["tokens"] + d_tokens
-            remaining_budget = target_tokens[sname] - splits[sname]["tokens"]
-
-            # Prefer splits that still have budget left.
-            # If remaining_budget is negative, penalize heavily.
-            over = max(0, projected_tokens - target_tokens[sname])
-            budget_penalty = (over / max(1, target_tokens[sname]))  # 0 if within budget
-
-            projected_counts = splits[sname]["counts"] + d_counts
-            score = l1_to_target(projected_counts, projected_tokens) + 2.0 * budget_penalty
-
-            # Extra soft preference: if split still has room, subtract a tiny bonus
-            if remaining_budget > 0:
-                score -= 0.01
-
-            if best_score is None or score < best_score:
-                best_score = score
-                best_split = sname
-
-        splits[best_split]["docs"].add(d)
-        splits[best_split]["counts"].update(d_counts)
-        splits[best_split]["tokens"] += d_tokens
-
-    # materialize examples
-    train_docs = splits["train"]["docs"]
-    dev_docs = splits["validation"]["docs"]
-    test_docs = splits["test"]["docs"]
-
-    train_examples = [ex for ex in examples if ex["doc_id"] in train_docs]
-    dev_examples = [ex for ex in examples if ex["doc_id"] in dev_docs]
-    test_examples = [ex for ex in examples if ex["doc_id"] in test_docs]
-
-    print("\n=== Stratified split summary (token-label distribution) ===")
-    for name in ("train", "validation", "test"):
-        c = splits[name]["counts"]
-        tot = splits[name]["tokens"]
-        print(f"{name:10s} docs={len(splits[name]['docs']):4d} tokens={tot:8d} L1={l1_to_target(c, tot):.4f}")
-
-    return train_examples, dev_examples, test_examples
+    return train, dev, test
 
 
 # ============================================================
@@ -803,6 +698,7 @@ def examples_to_dataset(examples):
         "entities": [ex["entities"] for ex in examples],
         "doc_id": [ex["doc_id"] for ex in examples],
         "p_index": [ex["p_index"] for ex in examples],
+        "group_id": [ex["group_id"] for ex in examples], 
         "input_ids": [ex["input_ids"] for ex in examples],
         "attention_mask": [ex["attention_mask"] for ex in examples],
         "labels": [ex["labels"] for ex in examples],
@@ -834,7 +730,14 @@ def build_and_save_corpus(root_dir, out_dir):
     examples = load_corpus(root_dir)
     print(f"Total examples: {len(examples)}")
 
-    train_ex, dev_ex, test_ex = split_by_document_stratified(examples)
+    train_ex, dev_ex, test_ex = simple_train_dev_test_split(
+    examples,
+    train_ratio=0.7,
+    dev_ratio=0.15,
+    test_ratio=0.15,
+    group_field="group_id",
+    seed=RANDOM_SEED,
+)
     print("Split sizes:", len(train_ex), len(dev_ex), len(test_ex))
     if len(dev_ex) == 0 or len(test_ex) == 0:
         raise RuntimeError("Split produced empty dev/test — check doc_id diversity and split logic.")

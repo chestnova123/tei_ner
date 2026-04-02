@@ -80,6 +80,9 @@ What jumps out is that bibl spans are pathologically wrong - FIX.
 Bibl spans are also often in other languages (Lating, French, English) which is not a problem for the model since it is a multi-lingual transformer.
 BUT the split is not language aware - FIX.
 Entity distribution across the split has slight drift but not too bad, but the label distribution has gigantic drift - FIX, rebuild splits
+Various attempts to balance splits algorythmically have failed. Resorted to simply deleting documents with high Bibl entity counts - remove any documents with 8 or more bibl entities (not a big impact on overall data volume). exclude any entity spans over over 40 tokens for bible and over 10 for place and artefact. rebuilt splits. There is still some label drift, but the I-BIBL labels are more present in the train than in the test and val. try training wiht these splits.
+
+
 
 
  

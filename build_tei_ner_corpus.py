@@ -2,22 +2,51 @@ import re
 import json
 import random
 from pathlib import Path
-
+import math
 
 from lxml import etree
 from lxml.etree import XMLSyntaxError
 
 from transformers import AutoTokenizer
 from datasets import Dataset, DatasetDict
+from collections import Counter, defaultdict
 
+# version 2.0. Adapts the extraction process to keep structural information in the extracting text by marking edits.
 
 # ============================================================
 # 1. Global config
 # ============================================================
 
-MODEL_NAME = "bert-base-german-cased"  # or another HF model
+QUOTA_VAL = {"BIBL": 150, "ORG": 60}
+QUOTA_TEST = {"BIBL": 150, "ORG": 60}
+GROUP_BLOCK_SIZE = 4
+LB_HYPH = "⟦LB_HYPH⟧"
+LB_NORM = "⟦LB⟧"
+
+# chars to treat as hyphen at line breaks
+HYPH_SET = {"-", "\u2010", "\u2011", "\u2212", "\u00AD"}  # - ‐ - − soft hyphen
+DASH_SET = {"\u2013"}  # – (optional)
+JOIN_SET = HYPH_SET | DASH_SET
+
+def _is_word_char(ch: str) -> bool:
+    # matches letters/digits/underscore; good enough for joining
+    return ch.isalnum() or ch == "_"
+
+MODEL_NAME = r"C:\Users\elena\Documents\WORK\USI\STIL PROJECT\ML\dapt_model_bio"  # or another HF model
 MAX_LENGTH = 512  # truncation length
 RANDOM_SEED = 42
+CHUNK_LEN = 480        # model input length per chunk (<=512)
+CHUNK_STRIDE = 128
+
+MARK_DEL = True 
+MARK_ADD = True
+MARK_HANDSHIFT = True
+MARK_HI = True
+
+HI_START, HI_END = " ⟦HI⟧ ", " ⟦/HI⟧ "
+DEL_START, DEL_END = " ⟦DEL⟧ ", " ⟦/DEL⟧ "
+ADD_START, ADD_END = " ⟦ADD⟧ ", " ⟦/ADD⟧ "
+LAT_MARK, KUR_MARK = " ⟦LAT⟧ ", " ⟦KUR⟧ "
 
 # Final entity types
 TYPES = [
@@ -31,10 +60,10 @@ TYPES = [
     "OTHER",
 ]
 
-# BILOU label set
+# BIO label set
 LABELS = ["O"]
 for t in TYPES:
-    LABELS.extend([f"B-{t}", f"I-{t}", f"L-{t}", f"U-{t}"])
+    LABELS.extend([f"B-{t}", f"I-{t}"])
 
 label2id = {l: i for i, l in enumerate(LABELS)}
 id2label = {i: l for l, i in label2id.items()}
@@ -48,6 +77,129 @@ TEI_NS = {"tei": "http://www.tei-c.org/ns/1.0"}
 # Path to Zeichen.dtd
 ENTITIES_DTD_PATH = r"C:\Users\elena\Documents\GitHub\semper-tei_new\scripts\R_transformer_based_entity_prediction\extraction_test\test_in\Zeichen.dtd"
 
+# Max allowed entity span length in TOKENS (per chunk). Spans longer than this are dropped to O.
+MAX_SPAN_TOKENS = {
+    "BIBL": 40,
+    "PLACE": 10,
+    "ARTEFACT": 10,
+}
+
+# Logging for capped/dropped spans
+CAP_LOG_SPANS = Counter()   # how many spans dropped per type
+CAP_LOG_TOKENS = Counter()  # how many tokens dropped per type
+
+def postprocess_hyphenation(text_chars, char_map):
+    """
+    Operates on the character stream + char_map, removing hyphenation across LB_HYPH
+    and converting LB_NORM to a space, while keeping char_map aligned.
+    """
+
+    # 1) remove soft hyphen chars everywhere (optional but usually correct)
+    new_chars = []
+    new_map = []
+    for ch, m in zip(text_chars, char_map):
+        if ch == "\u00AD":
+            continue
+        new_chars.append(ch)
+        new_map.append(m)
+
+    text_chars, char_map = new_chars, new_map
+
+    # Helper: match sentinel at a position
+    def match_at(i, needle):
+        if i + len(needle) > len(text_chars):
+            return False
+        return "".join(text_chars[i:i+len(needle)]) == needle
+
+    # 2) main scan
+    out_chars = []
+    out_map = []
+
+    i = 0
+    while i < len(text_chars):
+        # Replace normal LB marker with a single space
+        if match_at(i, LB_NORM):
+            out_chars.append(" ")
+            # Map this space to the first marker char's map entry (good enough)
+            out_map.append(char_map[i])
+            i += len(LB_NORM)
+            continue
+
+        if match_at(i, LB_HYPH):
+            left_ok = len(out_chars) > 0 and _is_word_char(out_chars[-1])
+            j = i + len(LB_HYPH)
+            while j < len(text_chars) and text_chars[j] == " ":
+                j += 1
+            right_ok = j < len(text_chars) and _is_word_char(text_chars[j])
+            if left_ok and right_ok:
+                i = j
+                continue
+            i += len(LB_HYPH)
+            continue
+          
+        # Hyphenation join:
+        # If we see a JOIN_SET char followed (optionally with spaces) by LB_HYPH,
+        # remove the join char + LB_HYPH and surrounding spaces to join words.
+        #
+        # We look for pattern:
+        #   <wordchar> [spaces] <hyphen/dash> [spaces] LB_HYPH [spaces] <wordchar>
+        #
+        # Since we are scanning left-to-right, we'll detect when we're at a hyphen/dash
+        # and see if LB_HYPH comes next.
+        if text_chars[i] in JOIN_SET:
+            # Look ahead skipping spaces
+            j = i + 1
+            while j < len(text_chars) and text_chars[j] == " ":
+                j += 1
+
+            if match_at(j, LB_HYPH):
+                k = j + len(LB_HYPH)
+                while k < len(text_chars) and text_chars[k] == " ":
+                    k += 1
+
+                # Check word chars on both sides
+                left_ok = len(out_chars) > 0 and _is_word_char(out_chars[-1])
+                right_ok = k < len(text_chars) and _is_word_char(text_chars[k])
+
+                if left_ok and right_ok:
+                    # Drop the hyphen/dash and the LB_HYPH marker completely
+                    i = k
+                    continue
+
+        # Also handle case where hyphen is BEFORE spaces already in output
+        # (e.g. "...- ⟦LB_HYPH⟧ ..."): the above handles it because hyphen is current char.
+
+        # Drop standalone LB_HYPH if it survived without a join char (leave as nothing)
+        if match_at(i, LB_HYPH):
+            i += len(LB_HYPH)
+            continue
+
+        # Otherwise, copy char through
+        out_chars.append(text_chars[i])
+        out_map.append(char_map[i])
+        i += 1
+
+    # 3) collapse multiple spaces (keep char_map aligned)
+    final_chars = []
+    final_map = []
+    prev_space = False
+    for ch, m in zip(out_chars, out_map):
+        if ch == " ":
+            if prev_space:
+                continue
+            prev_space = True
+        else:
+            prev_space = False
+        final_chars.append(ch)
+        final_map.append(m)
+
+    # strip leading/trailing space (again keep map aligned)
+    while final_chars and final_chars[0] == " ":
+        final_chars.pop(0); final_map.pop(0)
+    while final_chars and final_chars[-1] == " ":
+        final_chars.pop(); final_map.pop()
+
+    return "".join(final_chars), final_map
 
 def build_entity_map_from_dtd(dtd_path):
     """
@@ -146,79 +298,85 @@ def sanitize_xml_text(xml_text, entity_map):
 # ============================================================
 
 
-from lxml import etree
-
-
 def normalize_paragraph(p_elem):
-    """
-    Normalize a TEI <p> element to plain text and build a character map.
-
-    Returns
-    -------
-    text : str
-        Normalized paragraph text.
-    char_map : list of (node, kind, offset)
-        For each character at position i in `text`,
-        char_map[i] = (node, kind, offset) where:
-          - node : the lxml node the character came from
-          - kind : "text", "tail" or "lb"
-          - offset : index in node.text / node.tail, or 0 for "lb"
-    """
-    text_chars = []
-    char_map = []
+    text_chars, char_map = [], []
 
     def append_char(ch, node, kind, offset):
         text_chars.append(ch)
         char_map.append((node, kind, offset))
 
+    def append_literal(s, node, kind):
+        # literal markers: they don’t correspond to an XML char offset,
+        # but we still need them in the text stream.
+        # Use offset=-1 so they can’t be confused with real node text offsets.
+        for k, ch in enumerate(s):
+            append_char(ch, node, kind, -1 - k)
+
     def recurse(node):
-        # 1) node.text
         if node.text:
             for i, ch in enumerate(node.text):
                 append_char(ch, node, "text", i)
 
-        # 2) element children only
-        #    list(node) in lxml gives only element children
         for child in list(node):
             if not isinstance(child, etree._Element):
-                # super defensive: skip anything that isn't an element
-                # You can uncomment to debug:
-                # print("Skipping non-element child:", type(child), repr(child))
                 continue
 
-            # Get local tag name safely (no QName)
             tag = child.tag
             if isinstance(tag, str) and "}" in tag:
-                # strip namespace: {ns}localname
                 tag = tag.split("}", 1)[1]
 
             if tag == "lb":
-                lb_type = child.get("type")
+                lb_type = (child.get("type") or "").lower()
                 if lb_type == "hyph":
-                    # remove a preceding hyphen if present
-                    if text_chars and text_chars[-1] == "-":
-                        text_chars.pop()
-                        char_map.pop()
+                    append_literal(" " + LB_HYPH + " ", child, "marker")
                 else:
-                    # normal line break -> space
-                    append_char(" ", child, "lb", 0)
+                    append_literal(" " + LB_NORM + " ", child, "marker")
 
-            elif tag in {"del", "metamark"}:
-                # skip deleted/metamark content entirely
+            elif tag == "metamark":
+                # usually safest to skip
                 pass
 
-            else:
-                # includes rs, hi, add, subst, handShift, etc.
+            elif tag == "del":
+                if MARK_DEL:
+                    append_literal(DEL_START, child, "marker")
+                recurse(child)  # keep the deleted text
+                if MARK_DEL:
+                    append_literal(DEL_END, child, "marker")
+
+            elif tag == "add":
+                if MARK_ADD:
+                    append_literal(ADD_START, child, "marker")
+                recurse(child)
+                if MARK_ADD:
+                    append_literal(ADD_END, child, "marker")
+
+            elif tag == "handShift":
+                if MARK_HANDSHIFT:
+                    scr = (child.get("script") or "").lower()
+                    if "latein" in scr or "latin" in scr:
+                        append_literal(LAT_MARK, child, "marker")
+                    elif "kurrent" in scr:
+                        append_literal(KUR_MARK, child, "marker")
+                # handShift often has no useful text; still recurse in case it does
                 recurse(child)
 
-            # 3) child.tail
+            elif tag == "hi":
+                if MARK_HI:
+                    append_literal(HI_START, child, "marker")
+                recurse(child)
+                if MARK_HI:
+                    append_literal(HI_END, child, "marker")
+
+            else:
+                recurse(child)
+
             if child.tail:
                 for i, ch in enumerate(child.tail):
                     append_char(ch, child, "tail", i)
 
     recurse(p_elem)
-    return "".join(text_chars), char_map
-
+    text, cmap = postprocess_hyphenation(text_chars, char_map)
+    return text, cmap
 
 def build_inverse_char_map(char_map):
     """
@@ -303,9 +461,11 @@ def extract_entities_from_paragraph(p_elem, text, char_map):
     entities = []
 
     for rs in p_elem.xpath(".//tei:rs", namespaces=TEI_NS):
-        rs_type = rs.get("type")
+        rs_type = (rs.get("type") or "").strip().lower()
         label = map_rs_type_to_label(rs_type)
         start, end = get_span_for_rs(rs, idx_map)
+        if label is None:
+            continue
         if start is not None and end is not None and start < end:
             entities.append({"start": start, "end": end, "label": label})
 
@@ -318,83 +478,105 @@ def extract_entities_from_paragraph(p_elem, text, char_map):
 # ============================================================
 
 
-def spans_to_bilou_labels(text, entities, tokenizer, label2id, max_length=512):
+def spans_to_bio_chunked(text, entities, tokenizer, label2id, chunk_len=480, stride=128):
     """
-    Convert char-based entity spans into BILOU token labels.
-
-    Parameters
-    ----------
-    text : str
-        Normalized paragraph text.
-    entities : list of dict
-        Each dict: {"start": int, "end": int, "label": str}
-        where label is the TYPE (e.g. "PERSON", "PLACE", ...), no BILOU prefix.
-    tokenizer : HF tokenizer
-    label2id : dict
-        Mapping from label string to integer id (e.g. "B-PERSON" -> 1).
-    max_length : int
-        Max sequence length for tokenizer (with truncation).
-
-    Returns
-    -------
-    encoding : dict
-        Tokenized input plus "labels" field with label ids per token.
+    Tokenize WITHOUT truncation, then create overlapping windows (chunks).
+    Returns a list of dicts, each containing input_ids/attention_mask/labels
+    for one chunk.
     """
-    encoding = tokenizer(
+    enc = tokenizer(
         text,
         return_offsets_mapping=True,
-        truncation=True,
-        max_length=max_length,
+        truncation=False,
+        add_special_tokens=True,
     )
-    offsets = encoding["offset_mapping"]
 
-    # Start with all tokens as "O"
-    token_tags = ["O"] * len(offsets)
+    input_ids_all = enc["input_ids"]
+    attn_all = enc["attention_mask"]
+    offsets_all = enc["offset_mapping"]
 
-    # Assign BILOU tags for each entity
-    def assign_entity(entity):
-        start, end, ent_type = entity["start"], entity["end"], entity["label"]
+    # We'll build windows over the *full* tokenized sequence.
+    # Keep special tokens in place; offsets for special tokens are (0,0).
+    n = len(input_ids_all)
 
-        token_indices = []
-        for i, (tok_start, tok_end) in enumerate(offsets):
-            # (0,0) for special tokens like [CLS], [SEP]
-            if tok_start == tok_end == 0:
+    # Helper: build token-level BIO tags for a given offset list
+    def bio_for_offsets(offsets):
+        token_tags = ["O"] * len(offsets)
+
+        for ent in entities:
+            start, end, ent_type = ent["start"], ent["end"], ent["label"]
+
+            token_indices = []
+            for i, (ts, te) in enumerate(offsets):
+                if ts == te == 0:
+                    continue
+                if te <= start or ts >= end:
+                    continue
+                token_indices.append(i)
+
+            if not token_indices:
                 continue
-            # check overlap
-            if tok_end <= start or tok_start >= end:
+
+            ent_type = ent_type.upper()
+            cap = MAX_SPAN_TOKENS.get(ent_type)
+
+            # If span too long, drop ENTIRE span to O (i.e., do not assign any labels)
+            if cap is not None and len(token_indices) > cap:
+                CAP_LOG_SPANS[ent_type] += 1
+                CAP_LOG_TOKENS[ent_type] += len(token_indices)
                 continue
-            token_indices.append(i)
 
-        if not token_indices:
-            return  # entity truncated or misaligned
-
-        token_indices.sort()
-        n = len(token_indices)
-
-        if n == 1:
-            token_tags[token_indices[0]] = f"U-{ent_type}"
-        else:
+            # Otherwise normal BIO tagging
             token_tags[token_indices[0]] = f"B-{ent_type}"
-            for ti in token_indices[1:-1]:
+            for ti in token_indices[1:]:
                 token_tags[ti] = f"I-{ent_type}"
-            token_tags[token_indices[-1]] = f"L-{ent_type}"
 
-    for ent in entities:
-        assign_entity(ent)
+        labels = []
+        for (ts, te), tag in zip(offsets, token_tags):
+            if ts == te == 0:
+                labels.append(-100)
+            else:
+                labels.append(label2id[tag])
+        return labels
 
-    # Convert tags to label IDs, ignoring special tokens in the loss
-    labels_ids = []
-    for (tok_start, tok_end), tag in zip(offsets, token_tags):
-        if tok_start == tok_end == 0:
-            labels_ids.append(-100)
-        else:
-            labels_ids.append(label2id[tag])
+    chunks = []
+    start = 0
+    while start < n:
+        end = min(start + chunk_len, n)
 
-    encoding["labels"] = labels_ids
-    # Optionally drop offset_mapping if you don’t need it later
-    # del encoding["offset_mapping"]
-    return encoding
+        chunk_input_ids = input_ids_all[start:end]
+        chunk_attn = attn_all[start:end]
+        chunk_offsets = offsets_all[start:end]
 
+        # Compute labels for this chunk
+        chunk_labels = bio_for_offsets(chunk_offsets)
+
+        # Pad to chunk_len so trainer batches cleanly (optional but convenient)
+        pad_id = tokenizer.pad_token_id
+        pad_len = chunk_len - len(chunk_input_ids)
+        if pad_len > 0:
+            chunk_input_ids = chunk_input_ids + [pad_id] * pad_len
+            chunk_attn = chunk_attn + [0] * pad_len
+            chunk_labels = chunk_labels + [-100] * pad_len
+
+        chunks.append(
+            {
+                "input_ids": chunk_input_ids,
+                "attention_mask": chunk_attn,
+                "labels": chunk_labels,
+                # keep for debugging if you want:
+                # "offset_mapping": chunk_offsets,
+                "chunk_start": start,
+                "chunk_end": end,
+            }
+        )
+
+        if end == n:
+            break
+        # overlap
+        start = end - stride
+
+    return chunks
 
 # ============================================================
 # 5. Walking the TEI corpus and collecting examples
@@ -428,7 +610,7 @@ def process_document(xml_path, doc_id):
         return []
 
     # 4) Find paragraphs (namespace-agnostic)
-    p_elems = root.xpath("//*[local-name()='p']")
+    p_elems = root.xpath("//*[local-name()='p' and not(ancestor::*[local-name()='teiHeader'])]")
 
     for p_idx, p_elem in enumerate(p_elems):
         text, char_map = normalize_paragraph(p_elem)
@@ -436,25 +618,30 @@ def process_document(xml_path, doc_id):
             continue
 
         entities = extract_entities_from_paragraph(p_elem, text, char_map)
-        encoding = spans_to_bilou_labels(
+        chunk_encodings = spans_to_bio_chunked(
             text,
             entities,
             tokenizer,
             label2id,
-            max_length=MAX_LENGTH,
+            chunk_len=CHUNK_LEN,
+            stride=CHUNK_STRIDE,
         )
 
-        example = {
-            "text": text,
-            "entities": entities,
-            "doc_id": doc_id,
-            "p_index": p_idx,
-            "input_ids": encoding["input_ids"],
-            "attention_mask": encoding["attention_mask"],
-            "labels": encoding["labels"],
-        }
-        examples.append(example)
-
+        for c_idx, encoding in enumerate(chunk_encodings):
+            example = {
+                "text": text,
+                "entities": entities,
+                "doc_id": doc_id,
+                "p_index": p_idx,
+                "chunk_index": c_idx,
+                "group_id": f"{doc_id}::{p_idx}::{c_idx // GROUP_BLOCK_SIZE}",
+                "chunk_start": encoding["chunk_start"],
+                "chunk_end": encoding["chunk_end"],
+                "input_ids": encoding["input_ids"],
+                "attention_mask": encoding["attention_mask"],
+                "labels": encoding["labels"],
+            }
+            examples.append(example)
     return examples
 
 
@@ -470,37 +657,215 @@ def load_corpus(root_dir):
     for doc_id, path in enumerate(xml_files):
         doc_examples = process_document(path, doc_id)
         all_examples.extend(doc_examples)
+    
     return all_examples
 
 
 # ============================================================
-# 6. Train/dev/test split (by document)
+# 6. Train/dev/test split (by document, stratified)
 # ============================================================
-
-
-def split_by_document(examples, train_ratio=0.7, dev_ratio=0.15, test_ratio=0.15):
+def count_entity_spans_in_labels(label_ids):
     """
-    Split examples by doc_id to avoid leakage between train/dev/test.
-    Ratios must sum to 1.0 (approximately).
+    Count entity spans by type in BIO labels (label IDs).
+    Returns Counter like {"BIBL": 3, "ORG": 1, ...}
     """
+    counts = Counter()
+    prev_type = None
+    prev_is_entity = False
+
+    for lid in label_ids:
+        if lid == -100:
+            prev_type = None
+            prev_is_entity = False
+            continue
+
+        lab = id2label[int(lid)]
+        if lab == "O":
+            prev_type = None
+            prev_is_entity = False
+            continue
+
+        # BIO: B-X starts a new span; I-X continues if same type, else treat as new span
+        prefix, typ = lab.split("-", 1)
+        if prefix == "B":
+            counts[typ] += 1
+            prev_type = typ
+            prev_is_entity = True
+        else:  # "I"
+            if not prev_is_entity or prev_type != typ:
+                counts[typ] += 1  # broken I- sequence → new span
+            prev_type = typ
+            prev_is_entity = True
+
+    return counts
+
+def split_by_group_stratified(
+    examples,
+    train_ratio=0.7,
+    dev_ratio=0.15,
+    test_ratio=0.15,
+    group_field="group_id",
+):
+    assert abs(train_ratio + dev_ratio + test_ratio - 1.0) < 1e-6
     random.seed(RANDOM_SEED)
-    doc_ids = sorted({ex["doc_id"] for ex in examples})
-    random.shuffle(doc_ids)
 
-    n_docs = len(doc_ids)
-    n_train = int(n_docs * train_ratio)
-    n_dev = int(n_docs * dev_ratio)
-    # rest go to test
+    # Aggregate label counts per group
+    group_counts = defaultdict(Counter)
+    group_tokens = Counter()
+    group_labels_flat = defaultdict(list)
 
-    train_docs = set(doc_ids[:n_train])
-    dev_docs = set(doc_ids[n_train : n_train + n_dev])
-    test_docs = set(doc_ids[n_train + n_dev :])
+    for ex in examples:
+        g = ex[group_field]
+        labs = ex["labels"]
 
-    train_examples = [ex for ex in examples if ex["doc_id"] in train_docs]
-    dev_examples = [ex for ex in examples if ex["doc_id"] in dev_docs]
-    test_examples = [ex for ex in examples if ex["doc_id"] in test_docs]
+        # for BIO span counting
+        group_labels_flat[g].extend(labs)
 
-    return train_examples, dev_examples, test_examples
+        # for token label distribution (exclude -100)
+        for lab in labs:
+            if lab == -100:
+                continue
+            group_counts[g][lab] += 1
+            group_tokens[g] += 1
+
+    groups = list(group_counts.keys())
+    if len(groups) < 3:
+        random.shuffle(groups)
+        train_g = set(groups)
+        return [ex for ex in examples if ex[group_field] in train_g], [], []
+
+    # BIO span counts per group (safe default)
+    group_span_counts = {}
+    for g in groups:
+        group_span_counts[g] = count_entity_spans_in_labels(group_labels_flat.get(g, []))
+    
+    def dist(cnt, total):
+        if total <= 0:
+            return {}
+        return {k: v / total for k, v in cnt.items()}
+    global_counts = Counter()
+    global_total=0
+   
+    target = dist(global_counts, global_total)
+
+    budgets = {
+        "train": int(global_total * train_ratio),
+        "validation": int(global_total * dev_ratio),
+        "test": int(global_total * test_ratio),
+    }
+
+    splits = {
+        "train": {"groups": set(), "counts": Counter(), "tokens": 0},
+        "validation": {"groups": set(), "counts": Counter(), "tokens": 0},
+        "test": {"groups": set(), "counts": Counter(), "tokens": 0},
+    }
+    
+    def l1(cnt, total):
+        if total <= 0:
+            return 1e9
+        p = dist(cnt, total)
+        keys = set(target) | set(p)
+        return sum(abs(p.get(k, 0.0) - target.get(k, 0.0)) for k in keys)
+    
+    
+    # Prefer groups rich in rare types for val/test quotas
+    def score_group_for_type(g, typ):
+        return group_span_counts.get(g, Counter()).get(typ, 0)
+
+    # Start with empty split assignments
+    train_groups, val_groups, test_groups = set(), set(), set()
+
+    val_have = Counter()    
+    test_have = Counter()
+
+    # Sort groups by BIBL+ORG richness
+    rare_sorted = sorted(
+        groups,
+        key=lambda g: (score_group_for_type(g, "BIBL") + score_group_for_type(g, "ORG")),
+        reverse=True
+    )
+
+    # Fill validation quotas
+    for g in rare_sorted:
+        if g in val_groups or g in test_groups or g in train_groups:
+            continue
+        need_any = any(val_have[t] < QUOTA_VAL[t] for t in QUOTA_VAL)
+        if not need_any:
+            break
+        val_groups.add(g)
+        for t in QUOTA_VAL:
+            val_have[t] += group_span_counts[g].get(t, 0)
+
+    # Fill test quotas (avoid overlap with val)
+    for g in rare_sorted:
+        if g in val_groups or g in test_groups or g in train_groups:
+            continue
+        need_any = any(test_have[t] < QUOTA_TEST[t] for t in QUOTA_TEST)
+        if not need_any:
+            break
+        test_groups.add(g)
+        for t in QUOTA_TEST:
+            test_have[t] += group_span_counts[g].get(t, 0)
+    
+    for g in val_groups:
+        splits["validation"]["groups"].add(g)
+        splits["validation"]["counts"].update(group_counts[g])
+        splits["validation"]["tokens"] += group_tokens[g]
+
+    for g in test_groups:
+        splits["test"]["groups"].add(g)
+        splits["test"]["counts"].update(group_counts[g])
+        splits["test"]["tokens"] += group_tokens[g]
+
+    # Everything else goes into the greedy optimizer (including train)
+    preassigned = val_groups | test_groups
+    remaining_groups = [g for g in groups if g not in preassigned]
+
+    # Sort groups by size (big first) for stability
+    remaining_sorted = sorted(remaining_groups, key=lambda g: group_tokens[g], reverse=True)
+
+    for g in remaining_sorted:
+        g_cnt = group_counts[g]
+        g_tok = group_tokens[g]
+
+        candidates = []
+        for sname in ["train", "validation", "test"]:
+            # HARD budget gate: if split is already beyond budget, penalize strongly
+            projected_tokens = splits[sname]["tokens"] + g_tok
+            over = max(0, projected_tokens - budgets[sname])
+            over_frac = over / max(1, budgets[sname])
+
+            projected_counts = splits[sname]["counts"] + g_cnt
+            score = l1(projected_counts, projected_tokens) + 5.0 * over_frac
+            candidates.append((score, sname))
+
+        candidates.sort()
+        best = candidates[0][1]
+
+        splits[best]["groups"].add(g)
+        splits[best]["counts"].update(g_cnt)
+        splits[best]["tokens"] += g_tok
+
+    # Materialize
+    train_g = splits["train"]["groups"]
+    val_g = splits["validation"]["groups"]
+    test_g = splits["test"]["groups"]
+
+    train = [ex for ex in examples if ex[group_field] in train_g]
+    val = [ex for ex in examples if ex[group_field] in val_g]
+    test = [ex for ex in examples if ex[group_field] in test_g]
+
+    print("Quota achieved:")
+    print("  val :", {t: val_have[t] for t in QUOTA_VAL})
+    print("  test:", {t: test_have[t] for t in QUOTA_TEST})
+    print("Preassigned groups:", len(val_groups), len(test_groups))
+
+    print("\n=== Group-level stratified split summary ===")
+    for name in ["train", "validation", "test"]:
+        c = splits[name]["counts"]; tot = splits[name]["tokens"]
+        print(f"{name:10s} groups={len(splits[name]['groups']):5d} tokens={tot:9d} L1={l1(c, tot):.4f}")
+
+    return train, val, test
 
 
 # ============================================================
@@ -518,6 +883,7 @@ def examples_to_dataset(examples):
         "entities": [ex["entities"] for ex in examples],
         "doc_id": [ex["doc_id"] for ex in examples],
         "p_index": [ex["p_index"] for ex in examples],
+        "group_id": [ex["group_id"] for ex in examples], 
         "input_ids": [ex["input_ids"] for ex in examples],
         "attention_mask": [ex["attention_mask"] for ex in examples],
         "labels": [ex["labels"] for ex in examples],
@@ -549,8 +915,10 @@ def build_and_save_corpus(root_dir, out_dir):
     examples = load_corpus(root_dir)
     print(f"Total examples: {len(examples)}")
 
-    train_ex, dev_ex, test_ex = split_by_document(examples)
-    print(f"Train: {len(train_ex)}, Dev: {len(dev_ex)}, Test: {len(test_ex)}")
+    train_ex, dev_ex, test_ex = split_by_group_stratified(examples, group_field="group_id")
+    print("Split sizes:", len(train_ex), len(dev_ex), len(test_ex))
+    if len(dev_ex) == 0 or len(test_ex) == 0:
+        raise RuntimeError("Split produced empty dev/test — check doc_id diversity and split logic.")
 
     # Save JSONL
     write_jsonl(train_ex, out_dir / "train.jsonl")
@@ -574,6 +942,30 @@ def build_and_save_corpus(root_dir, out_dir):
     # Save HF dataset to disk
     ds_dict.save_to_disk(str(out_dir / "hf_dataset"))
     print(f"Saved HF Dataset to {out_dir / 'hf_dataset'}")
+    
+    # --- Report capping ---
+    print("\n=== Span capping report (dropped to O) ===")
+    total_spans = sum(CAP_LOG_SPANS.values())
+    total_tokens = sum(CAP_LOG_TOKENS.values())
+    print(f"Total spans dropped: {total_spans}")
+    print(f"Total tokens dropped: {total_tokens}")
+
+    for t in sorted(CAP_LOG_SPANS.keys()):
+        print(f"{t:10s} spans={CAP_LOG_SPANS[t]:6d}  tokens={CAP_LOG_TOKENS[t]:8d}")
+
+    # Save as JSON for reproducibility
+    cap_report = {
+        "max_span_tokens": MAX_SPAN_TOKENS,
+        "dropped_spans": dict(CAP_LOG_SPANS),
+        "dropped_tokens": dict(CAP_LOG_TOKENS),
+        "total_dropped_spans": total_spans,
+        "total_dropped_tokens": total_tokens,
+    }
+    with open(out_dir / "span_capping_report.json", "w", encoding="utf-8") as f:
+        json.dump(cap_report, f, ensure_ascii=False, indent=2)
+
+    print(f"Wrote: {out_dir / 'span_capping_report.json'}")
+
 
 
 # ============================================================
