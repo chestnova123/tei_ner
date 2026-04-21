@@ -14,7 +14,7 @@ MARK_HI = True
 HI_START, HI_END = " ⟦HI⟧ ", " ⟦/HI⟧ "
 DEL_START, DEL_END = " ⟦DEL⟧ ", " ⟦/DEL⟧ "
 ADD_START, ADD_END = " ⟦ADD⟧ ", " ⟦/ADD⟧ "
-LAT_MARK, KUR_MARK = " ⟦LAT⟧ ", " ⟦KUR⟧ "
+LAT_MARK, KUR_MARK, GR_MARK = " ⟦LAT⟧ ", " ⟦KUR⟧ ", " ⟦GR⟧ "
 
 LB_HYPH = "⟦LB_HYPH⟧"
 LB_NORM = "⟦LB⟧"
@@ -66,6 +66,62 @@ def remove_xml_comments(xml_text: str) -> str:
     """
     return re.sub(r"<!--.*?-->", "", xml_text, flags=re.DOTALL)
 
+# Path to your TEI entity DTD
+ENTITIES_DTD_PATH = r"C:\Users\elena\Documents\WORK\USI\STIL PROJECT\ML\training_data\Zeichen.dtd"
+
+
+def build_entity_map_from_dtd(dtd_path: str) -> dict:
+    """
+    Parse a DTD like Zeichen.dtd and map entity name -> Unicode character.
+    Assumes lines like <!ENTITY semikol "&#59;" >
+    """
+    text = Path(dtd_path).read_text(encoding="utf-8", errors="ignore")
+    pat = re.compile(r'<!ENTITY\s+([^"\s]+)\s+"&#(\d+);"')
+    entity_map = {}
+    for name, code in pat.findall(text):
+        entity_map[name] = chr(int(code))
+    return entity_map
+
+
+ENTITY_MAP = build_entity_map_from_dtd(ENTITIES_DTD_PATH)
+
+
+def expand_custom_entities(xml_text: str, entity_map: dict) -> str:
+    """
+    Replace known custom entities like &semikol; with their character.
+    Leave unknown entities untouched for the next sanitation step.
+    """
+    pat = re.compile(r"&([^\d#][^;\s]*);")
+
+    def repl(m):
+        name = m.group(1)
+        return entity_map.get(name, m.group(0))
+
+    return pat.sub(repl, xml_text)
+
+
+def sanitize_xml_text(xml_text: str, entity_map: dict) -> str:
+    """
+    1) Expand known custom entities.
+    2) Escape unknown named entities as literal text.
+    3) Escape bare '&' that do not begin a valid entity/reference.
+    """
+    xml_text = expand_custom_entities(xml_text, entity_map)
+
+    def repl_unknown_entity(m):
+        name = m.group(1)
+        if name in entity_map:
+            return m.group(0)
+        return "&amp;" + name + ";"
+
+    xml_text = re.sub(r"&([A-Za-z_][A-Za-z0-9._:-]*);", repl_unknown_entity, xml_text)
+
+    bare_amp_pattern = re.compile(
+        r"&(?![A-Za-z_][A-Za-z0-9._:-]*;|#[0-9]+;|#x[0-9A-Fa-f]+;)"
+    )
+    xml_text = bare_amp_pattern.sub("&amp;", xml_text)
+
+    return xml_text
 
 def paragraph_to_text(p_elem: etree._Element) -> str:
     """Flatten a TEI <p> into text, similar to your NER corpus normalizer."""
@@ -96,16 +152,16 @@ def paragraph_to_text(p_elem: etree._Element) -> str:
                 else:
                     append(" ")
 
-            elif tag == "choice":
+            #elif tag == "choice":
                 # Prefer <corr>, else <sic>, else recurse
-                corr = child.find("tei:corr", namespaces=TEI_NS)
-                sic = child.find("tei:sic", namespaces=TEI_NS)
-                if corr is not None:
-                    append("".join(corr.itertext()))
-                elif sic is not None:
-                    append("".join(sic.itertext()))
-                else:
-                    recurse(child)
+                #corr = child.find("tei:corr", namespaces=TEI_NS)
+                #sic = child.find("tei:sic", namespaces=TEI_NS)
+                #if corr is not None:
+                    #append("".join(corr.itertext()))
+                #elif sic is not None:
+                    #append("".join(sic.itertext()))
+                #else:
+                    #recurse(child)
 
             elif tag == "del":
                 if MARK_DEL:
@@ -128,6 +184,8 @@ def paragraph_to_text(p_elem: etree._Element) -> str:
                         append(LAT_MARK)
                     elif "kurrent" in scr:
                         append(KUR_MARK)
+                    elif "griechisch" in scr:
+                        append(GR_MARK)    
                 recurse(child)
 
             elif tag == "hi":
@@ -156,8 +214,17 @@ def extract_paragraphs_from_file(xml_path: Path) -> list[str]:
     # remove commented-out XML so it never enters the corpus
     xml_text = remove_xml_comments(xml_text)
     
-    # parse without loading DTDs
-    parser = etree.XMLParser(load_dtd=False, resolve_entities=False, no_network=True, recover=True)
+    # sanitize entities / bare ampersands before parsing
+    xml_text = sanitize_xml_text(xml_text, ENTITY_MAP)
+
+    # parse without loading DTDs; do NOT silently recover broken markup
+    parser = etree.XMLParser(
+        load_dtd=False,
+        resolve_entities=False,
+        no_network=True,
+        recover=False,
+        remove_comments=True,
+    )
     root = etree.fromstring(xml_text.encode("utf-8"), parser=parser)
 
     # paragraphs in body only (exclude teiHeader)
@@ -167,6 +234,9 @@ def extract_paragraphs_from_file(xml_path: Path) -> list[str]:
     for p in p_elems:
         t = paragraph_to_text(p)
         if t:
+            if "<lb" in t or "</p>" in t or "<rs" in t or "<handShift" in t:
+                print(f"[LEAKED TAGS] {xml_path}")
+                print(t[:1000])
             lines.append(t)
     return lines
 
@@ -175,7 +245,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in_dir", required=True, type=Path, help="Folder with TEI XML files (recursive)")
     ap.add_argument("--out_txt", required=True, type=Path, help="Output text file (one paragraph per line)")
-    ap.add_argument("--min_chars", type=int, default=20, help="Drop lines shorter than this")
+    ap.add_argument("--min_chars", type=int, default=5, help="Drop lines shorter than this")
     args = ap.parse_args()
 
     xml_files = sorted(args.in_dir.rglob("*.xml"))

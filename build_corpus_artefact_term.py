@@ -30,7 +30,7 @@ def _is_word_char(ch: str) -> bool:
     # matches letters/digits/underscore; good enough for joining
     return ch.isalnum() or ch == "_"
 
-MODEL_NAME = r"C:\Users\elena\Documents\WORK\USI\STIL PROJECT\ML\dapt_model"  # or another HF model
+MODEL_NAME = r"C:\Users\elena\Documents\WORK\USI\STIL PROJECT\ML\model_dapt"  # or another HF model
 MAX_LENGTH = 512  # truncation length
 RANDOM_SEED = 42
 CHUNK_LEN = 480        # model input length per chunk (<=512)
@@ -44,7 +44,7 @@ MARK_HI = True
 HI_START, HI_END = " ⟦HI⟧ ", " ⟦/HI⟧ "
 DEL_START, DEL_END = " ⟦DEL⟧ ", " ⟦/DEL⟧ "
 ADD_START, ADD_END = " ⟦ADD⟧ ", " ⟦/ADD⟧ "
-LAT_MARK, KUR_MARK = " ⟦LAT⟧ ", " ⟦KUR⟧ "
+LAT_MARK, KUR_MARK, GR_MARK = " ⟦LAT⟧ ", " ⟦KUR⟧ ", " ⟦GR⟧ "
 
 # Final entity types
 TYPES = [
@@ -67,7 +67,7 @@ TEI_NS = {"tei": "http://www.tei-c.org/ns/1.0"}
 # expansion of xml entitites
 
 # Path to Zeichen.dtd
-ENTITIES_DTD_PATH = r"C:\Users\elena\Documents\WORK\USI\STIL PROJECT\ML\training_data_filtered\Zeichen.dtd"
+ENTITIES_DTD_PATH = r"C:\Users\elena\Documents\WORK\USI\STIL PROJECT\ML\training_data\Zeichen.dtd"
 
 # Max allowed entity span length in TOKENS (per chunk). Spans longer than this are dropped to O.
 MAX_SPAN_TOKENS = {
@@ -235,25 +235,6 @@ def remove_xml_comments(xml_text):
     """
     return re.sub(r"<!--.*?-->", "", xml_text, flags=re.DOTALL)
 
-def escape_lt_in_any_quotes(xml_text):
-    """
-    Replace any '<' inside either single or double quoted strings with '&lt;'.
-    Handles multi-line quoted strings.
-    """
-
-    def repl(m):
-        quote = m.group(1)  # ' or "
-        content = m.group(2)  # inside quotes, possibly multiline
-        content_fixed = content.replace("<", "&lt;")
-        return f"{quote}{content_fixed}{quote}"
-
-    # Supports:
-    #   " ... possibly multiline ... "
-    #   ' ... possibly multiline ... '
-    pattern = re.compile(r'(["\'])(.*?)\1', re.DOTALL)
-    return pattern.sub(repl, xml_text)
-
-
 def sanitize_xml_text(xml_text, entity_map):
     """
     1) Expand known custom entities using entity_map (e.g. &semikol; -> ';').
@@ -284,9 +265,6 @@ def sanitize_xml_text(xml_text, entity_map):
         r"&(?![A-Za-z_][A-Za-z0-9._:-]*;|#[0-9]+;|#x[0-9A-Fa-f]+;)"
     )
     xml_text = bare_amp_pattern.sub("&amp;", xml_text)
-
-    # 4) escape '<' inside ANY quoted string, multiline-aware
-    xml_text = escape_lt_in_any_quotes(xml_text)
 
     return xml_text
 
@@ -355,6 +333,8 @@ def normalize_paragraph(p_elem):
                         append_literal(LAT_MARK, child, "marker")
                     elif "kurrent" in scr:
                         append_literal(KUR_MARK, child, "marker")
+                    elif "griechisch" in scr:
+                        append_literal(GR_MARK, child, "marker")
                 # handShift often has no useful text; still recurse in case it does
                 recurse(child)
 
