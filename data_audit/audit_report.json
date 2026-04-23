@@ -1,0 +1,136 @@
+{
+  "grand_total": {
+    "ARTEFACT": 21370,
+    "CONCEPT": 20135,
+    "CULTURE": 1609,
+    "PERSON": 4164,
+    "PLACE": 3739,
+    "BIBL": 3557,
+    "ORG": 863
+  },
+  "per_split": {
+    "train": {
+      "ARTEFACT": 11477,
+      "CONCEPT": 8763,
+      "CULTURE": 1112,
+      "PERSON": 2472,
+      "PLACE": 2342,
+      "BIBL": 2361,
+      "ORG": 598
+    },
+    "test": {
+      "CONCEPT": 4003,
+      "PERSON": 527,
+      "BIBL": 276,
+      "CULTURE": 182,
+      "ARTEFACT": 4334,
+      "PLACE": 600,
+      "ORG": 83
+    },
+    "dev": {
+      "CONCEPT": 7369,
+      "ARTEFACT": 5559,
+      "PLACE": 797,
+      "CULTURE": 315,
+      "BIBL": 920,
+      "PERSON": 1165,
+      "ORG": 182
+    }
+  },
+  "per_family": {
+    "kunstf": {
+      "ARTEFACT": 2843,
+      "CONCEPT": 889,
+      "CULTURE": 259,
+      "PERSON": 512,
+      "PLACE": 539,
+      "BIBL": 407,
+      "ORG": 323
+    },
+    "varia": {
+      "CONCEPT": 1146,
+      "PERSON": 320,
+      "BIBL": 168,
+      "CULTURE": 73,
+      "ARTEFACT": 1148,
+      "PLACE": 268,
+      "ORG": 78
+    },
+    "textil1": {
+      "CONCEPT": 1743,
+      "ARTEFACT": 1319,
+      "PLACE": 257,
+      "CULTURE": 174,
+      "BIBL": 201,
+      "PERSON": 363,
+      "ORG": 35
+    },
+    "textil2": {
+      "CONCEPT": 4431,
+      "PLACE": 886,
+      "ARTEFACT": 3327,
+      "CULTURE": 430,
+      "BIBL": 671,
+      "PERSON": 1125,
+      "ORG": 50
+    },
+    "stereo": {
+      "CONCEPT": 2857,
+      "ARTEFACT": 3186,
+      "CULTURE": 109,
+      "PLACE": 332,
+      "PERSON": 207,
+      "BIBL": 108,
+      "ORG": 5
+    },
+    "keramik": {
+      "CONCEPT": 576,
+      "CULTURE": 182,
+      "ARTEFACT": 2297,
+      "PLACE": 460,
+      "BIBL": 391,
+      "PERSON": 304,
+      "ORG": 181
+    },
+    "tektonik": {
+      "PERSON": 173,
+      "ARTEFACT": 1461,
+      "CONCEPT": 1877,
+      "BIBL": 185,
+      "PLACE": 276,
+      "ORG": 10,
+      "CULTURE": 151
+    },
+    "metal": {
+      "CONCEPT": 5233,
+      "BIBL": 429,
+      "ARTEFACT": 2860,
+      "PERSON": 599,
+      "CULTURE": 99,
+      "PLACE": 406,
+      "ORG": 85
+    },
+    "figure": {
+      "ARTEFACT": 1380,
+      "ORG": 62,
+      "PERSON": 203,
+      "BIBL": 290,
+      "CULTURE": 42,
+      "PLACE": 134,
+      "CONCEPT": 393
+    },
+    "textil_ex": {
+      "ARTEFACT": 1549,
+      "PLACE": 181,
+      "BIBL": 707,
+      "PERSON": 358,
+      "CONCEPT": 990,
+      "CULTURE": 90,
+      "ORG": 34
+    }
+  },
+  "unknown_rs_types": {
+    "¨place": 1,
+    "termm": 1
+  }
+}

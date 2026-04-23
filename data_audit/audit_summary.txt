@@ -1,0 +1,84 @@
+======================================================================
+ENTITY DISTRIBUTION AUDIT
+======================================================================
+
+Total entities across all files: 55437
+Total XML files scanned:         1721
+Files not in CSV (UNLISTED):     0
+
+--- Grand total by entity type ---
+  ARTEFACT  :  21370  ( 38.5%)
+  CONCEPT   :  20135  ( 36.3%)
+  PERSON    :   4164  (  7.5%)
+  PLACE     :   3739  (  6.7%)
+  ORG       :    863  (  1.6%)
+  CULTURE   :   1609  (  2.9%)
+  BIBL      :   3557  (  6.4%)
+
+--- Entity counts per split ---
+
+  Label            dev       %      test       %     train       %     Total
+  --------------------------------------------------------------------
+  ARTEFACT        5559   34.1%      4334   43.3%     11477   39.4%     21370
+  CONCEPT         7369   45.2%      4003   40.0%      8763   30.1%     20135
+  PERSON          1165    7.1%       527    5.3%      2472    8.5%      4164
+  PLACE            797    4.9%       600    6.0%      2342    8.0%      3739
+  ORG              182    1.1%        83    0.8%       598    2.1%       863
+  CULTURE          315    1.9%       182    1.8%      1112    3.8%      1609
+  BIBL             920    5.6%       276    2.8%      2361    8.1%      3557
+  TOTAL          16307    100%     10005    100%     29125    100%     55437
+
+--- Entity counts per family ---
+family     split  total  ARTEFACT      CONCEPT       PERSON        PLACE        ORG         CULTURE     BIBL       
+---------  -----  -----  ------------  ------------  ------------  -----------  ----------  ----------  -----------
+figure     dev    2504   1380 (55.1%)  393 (15.7%)   203 (8.1%)    134 (5.4%)   62 (2.5%)   42 (1.7%)   290 (11.6%)
+keramik    train  4391   2297 (52.3%)  576 (13.1%)   304 (6.9%)    460 (10.5%)  181 (4.1%)  182 (4.1%)  391 (8.9%) 
+kunstf     train  5772   2843 (49.3%)  889 (15.4%)   512 (8.9%)    539 (9.3%)   323 (5.6%)  259 (4.5%)  407 (7.1%) 
+metal      dev    9711   2860 (29.5%)  5233 (53.9%)  599 (6.2%)    406 (4.2%)   85 (0.9%)   99 (1.0%)   429 (4.4%) 
+stereo     test   6804   3186 (46.8%)  2857 (42.0%)  207 (3.0%)    332 (4.9%)   5 (0.1%)    109 (1.6%)  108 (1.6%) 
+tektonik   train  4133   1461 (35.3%)  1877 (45.4%)  173 (4.2%)    276 (6.7%)   10 (0.2%)   151 (3.7%)  185 (4.5%) 
+textil1    dev    4092   1319 (32.2%)  1743 (42.6%)  363 (8.9%)    257 (6.3%)   35 (0.9%)   174 (4.3%)  201 (4.9%) 
+textil2    train  10920  3327 (30.5%)  4431 (40.6%)  1125 (10.3%)  886 (8.1%)   50 (0.5%)   430 (3.9%)  671 (6.1%) 
+textil_ex  train  3909   1549 (39.6%)  990 (25.3%)   358 (9.2%)    181 (4.6%)   34 (0.9%)   90 (2.3%)   707 (18.1%)
+varia      test   3201   1148 (35.9%)  1146 (35.8%)  320 (10.0%)   268 (8.4%)   78 (2.4%)   73 (2.3%)   168 (5.2%) 
+
+--- Unrecognised rs/@type values (not mapped to any label) ---
+  '¨place': 1 occurrences
+  'termm': 1 occurrences
+
+--- Top 20 files by total entity count ---
+file                              family_id  split  total  ARTEFACT  CONCEPT  PERSON  PLACE  ORG  CULTURE  BIBL
+--------------------------------  ---------  -----  -----  --------  -------  ------  -----  ---  -------  ----
+20_Ms_247_24.xml                  figure     dev    229    94        62       21      16     0    13       23  
+20_Ms_247_25.xml                  figure     dev    188    77        51       21      5      0    1        33  
+20_Ms_205_6.xml                   varia      test   164    39        112      0       7      0    6        0   
+20_Ms_187_188_4.xml               textil2    train  156    67        72       0       9      0    8        0   
+20_Ms_191_5.xml                   stereo     test   146    41        70       10      19     0    6        0   
+20_Ms_205_7.xml                   varia      test   141    22        107      1       10     0    1        0   
+20_Ms_250_26.xml                  varia      test   137    56        32       15      8      17   0        9   
+20_Ms_187_188_2.xml               textil1    dev    136    61        69       0       4      0    2        0   
+20_Ms_191_4.xml                   stereo     test   129    22        71       1       13     0    22       0   
+20_Ms_191_3.xml                   stereo     test   107    39        62       0       0      0    6        0   
+Stil_Bd.1_Aufl_II_1878d_s137.xml  textil2    train  104    21        50       3       27     0    2        1   
+Stil_Bd.2_Aufl_I_1860a_s336.xml   tektonik   train  103    46        22       19      11     0    0        5   
+20_Ms_205_5.xml                   varia      test   102    3         94       3       2      0    0        0   
+Stil_Bd.2_Aufl_I_1860a_s541.xml   metal      dev    98     47        19       9       15     4    3        1   
+Stil_Bd.1_Aufl_II_1878d_s138.xml  textil2    train  94     17        59       3       14     0    1        0   
+20_Ms_187_188_3.xml               textil1    dev    93     45        30       5       1      0    7        5   
+20_Ms_248_213.xml                 textil_ex  train  92     23        54       11      1      0    0        3   
+Stil_Bd.1_Aufl_II_1878d_s232.xml  textil2    train  92     47        34       2       5      0    2        2   
+20_Ms_178_180_82.xml              kunstf     train  90     48        4        4       10     10   1        13  
+20_Ms_248_198.xml                 textil_ex  train  84     43        31       1       1      0    8        0   
+
+--- Files with 0 entities: 11 ---
+  20_Ms_216_91.xml  (family=textil2, paras=0)
+  20_Ms_217_5.xml  (family=textil2, paras=0)
+  20_Ms_217_9.xml  (family=textil2, paras=0)
+  20_Ms_226_19.xml  (family=stereo, paras=0)
+  20_Ms_227_49.xml  (family=metal, paras=0)
+  20_Ms_247_5.xml  (family=figure, paras=0)
+  20_Ms_250_21.xml  (family=varia, paras=0)
+  Stil_Bd.1_Aufl_II_1878d_s193.xml  (family=textil2, paras=0)
+  Stil_Bd.1_Aufl_II_1878d_s207.xml  (family=textil2, paras=0)
+  Stil_Bd.1_Aufl_II_1878d_s209.xml  (family=textil2, paras=0)
+  Stil_Bd.1_Aufl_II_1878d_s87.xml  (family=textil1, paras=0)
