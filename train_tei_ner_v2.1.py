@@ -58,6 +58,22 @@ for t in TYPES:
 label2id = {l: i for i, l in enumerate(LABELS)}
 id2label = {i: l for l, i in label2id.items()}
 
+# =====================================================================
+# 1a. Label entity counts for weighting
+# =====================================================================
+# Entity counts from split analysis
+
+TRAIN_ENTITY_COUNTS = {
+    "ARTEFACT": 21480,
+    "CONCEPT":  20335,
+    "PERSON":    4205,
+    "PLACE":     3766,
+    "BIBL":      3593,
+    "CULTURE":   1620,
+    "ORG":        865,
+}
+
+
 
 # =====================================================================
 # 2. Metrics: seqeval for entity-level F1
@@ -246,49 +262,44 @@ def print_predicted_tag_counts(trainer, dataset, id2label, topk=30):
 # 2.1 Weighted labels
 # ==============================
 
-def compute_label_counts(train_dataset):
-    counts = Counter()
-    for labels in train_dataset["labels"]:
-        for lab in labels:
-            if lab != -100:
-                counts[int(lab)] += 1
-    return counts
-    
-def make_class_weights(label2id, counts, scheme="log_inv", smoothing=1.0):
+def make_entity_count_weights(
+    label2id,
+    entity_counts,
+    alpha=0.6,
+    o_weight=0.85,
+    min_w=0.5,
+    max_w=4.0,
+):
     """
-    Returns torch.FloatTensor of shape [num_labels]
-    - scheme:
-        "inv"      : w = 1 / (count + smoothing)
-        "sqrt_inv" : w = 1 / sqrt(count + smoothing)
-        "log_inv"  : w = 1 / log(count + c)  (very gentle)
+    Weight by inverse entity frequency rather than token frequency.
+    This correctly upweights short-but-rare types like BIBL.
     """
-    num_labels = len(label2id)
-    weights = torch.ones(num_labels, dtype=torch.float)
+    import numpy as np
 
-    for lab_id in range(num_labels):
-        c = counts.get(lab_id, 0)
-        if c == 0:
-            # if a label never appears, don't blow up the weight
-            weights[lab_id] = 0.0
+    counts = np.array(list(entity_counts.values()), dtype=np.float64)
+    median_c = float(np.median(counts))
+
+    type_weight = {
+        t: (median_c / c) ** alpha
+        for t, c in entity_counts.items()
+    }
+
+    print("\n=== Entity-count-based type weights (before clamping) ===")
+    for t, w in sorted(type_weight.items(), key=lambda x: -x[1]):
+        print(f"  {t:12s}: {w:.4f}  (entities={entity_counts[t]})")
+
+    weights = torch.ones(len(label2id), dtype=torch.float)
+    for lab, lab_id in label2id.items():
+        if lab == "O":
             continue
+        t = tag_to_type(lab)
+        if t and t in type_weight:
+            weights[lab_id] = float(type_weight[t])
 
-        if scheme == "inv":
-            weights[lab_id] = 1.0 / (c + smoothing)
-        elif scheme == "sqrt_inv":
-            weights[lab_id] = 1.0 / math.sqrt(c + smoothing)
-        elif scheme == "log_inv":
-            # c must be >= 1 here
-            weights[lab_id] = 1.0 / math.log(c + 10.0)
-        else:
-            raise ValueError(f"Unknown scheme: {scheme}")
-
-    # Normalize weights
-    nonzero = weights[weights > 0]
-    if len(nonzero) > 0:
-        weights = weights / nonzero.mean()
-
+    weights[label2id["O"]] = o_weight
+    weights = torch.clamp(weights, min=min_w, max=max_w)
+    weights = weights / weights.mean()
     return weights
-
 
 def tag_to_type(label: str):
     """
@@ -301,144 +312,6 @@ def tag_to_type(label: str):
     m = re.match(r"^[BI]-(.+)$", label)
     return m.group(1) if m else None
 
-
-def compute_type_counts(train_dataset, id2label):
-    """
-    Count tokens per TYPE from train_dataset['labels'] ignoring -100.
-    Returns Counter like {'PERSON': 1234, 'ORG': 567, ...}
-    """
-    counts = Counter()
-    for labs in train_dataset["labels"]:
-        for lab_id in labs:
-            if lab_id == -100:
-                continue
-            lab = id2label[int(lab_id)]
-            t = tag_to_type(lab)
-            if t is not None:
-                counts[t] += 1
-    return counts
-def make_type_level_class_weights_balanced(
-    label2id,
-    id2label,
-    train_dataset,
-    alpha: float = 0.5,    
-    o_weight: float = 0.85,  
-    min_w: float = 0.5,    
-    max_w: float = 3.0,
-):
-    """
-    Weight each entity TYPE by (median_count / count)**alpha.
-    Assign that weight to all B/I/L/U tags of the TYPE.
-    Keep O around ~1 (optionally slightly downweighted).
-    """
-    type_counts = compute_type_counts(train_dataset, id2label)
-    if len(type_counts) == 0:
-        raise ValueError("No entity labels found (type_counts empty).")
-
-    counts = np.array(list(type_counts.values()), dtype=np.float64)
-    median_c = float(np.median(counts))
-
-    # type -> weight
-    type_weight = {}
-    for t, c in type_counts.items():
-        # rarer => bigger weight
-        w = (median_c / float(c)) ** float(alpha)
-        type_weight[t] = w
-
-    # build per-label weights
-    weights = torch.ones(len(label2id), dtype=torch.float)
-
-    for lab, lab_id in label2id.items():
-        if lab == "O":
-            continue
-        t = tag_to_type(lab)
-        if t is None or t not in type_weight:
-            weights[lab_id] = 1.0
-        else:
-            weights[lab_id] = float(type_weight[t])
-
-    # O weight (keep it near 1, slightly down if anything)
-    weights[label2id["O"]] = 1.0 * float(o_weight)
-
-    # clamp
-    weights = torch.clamp(weights, min=min_w, max=max_w)
-
-    # normalize so mean weight is 1 (optional but nice)
-    weights = weights / weights.mean()
-
-    return weights
-
-def make_type_level_class_weights(
-    label2id,
-    id2label,
-    train_dataset,
-    scheme="sqrt_inv",
-    smoothing=1.0,
-    o_weight=0.85,
-    min_w=0.5,
-    max_w=3.0,
-):
-    """
-    Create per-label weights where all B/I/L/U tags of a TYPE share the same weight.
-
-    scheme:
-      - "inv":      w_type = 1/(count + smoothing)
-      - "sqrt_inv": w_type = 1/sqrt(count + smoothing)
-      - "log_inv":  w_type = 1/log(count + 10)  (gentle)
-
-    o_weight:
-      Multiplicative factor applied to O after normalization (keep near 1.0 to avoid entity spam)
-
-    min_w/max_w:
-      Clamp weights to avoid extremes.
-    """
-    type_counts = compute_type_counts(train_dataset, id2label)
-
-    # Compute raw weights per TYPE
-    type_weight = {}
-    for t, c in type_counts.items():
-        if c <= 0:
-            continue
-        if scheme == "inv":
-            w = 1.0 / (c + smoothing)
-        elif scheme == "sqrt_inv":
-            w = 1.0 / math.sqrt(c + smoothing)
-        elif scheme == "log_inv":
-            w = 1.0 / math.log(c + 10.0)
-        else:
-            raise ValueError(f"Unknown scheme: {scheme}")
-        type_weight[t] = w
-
-    # Build per-label weights
-    num_labels = len(label2id)
-    weights = torch.ones(num_labels, dtype=torch.float)
-
-    # Set weights for entity tags based on their TYPE
-    for lab, lab_id in label2id.items():
-        if lab == "O":
-            continue
-        t = tag_to_type(lab)
-        if t is None:
-            continue
-        # If a type never appears, set to 0 to avoid nonsense gradients
-        if t not in type_weight:
-            weights[lab_id] = 0.0
-        else:
-            weights[lab_id] = float(type_weight[t])
-
-    # Normalize weights so mean of nonzero weights is 1.0
-    nonzero = weights[weights > 0]
-    if len(nonzero) > 0:
-        weights = weights / nonzero.mean()
-
-    # Apply O weight after normalization (keeps it interpretable)
-    if "O" in label2id:
-        weights[label2id["O"]] *= float(o_weight)
-
-    # Clamp to avoid extremes
-    weights = torch.clamp(weights, min=min_w, max=max_w)
-
-    return weights
 
 class WeightedTokenTrainer(Trainer):
     def __init__(
@@ -819,15 +692,16 @@ def main(
     # -----------------------------
     # Compute class weights
     # -----------------------------
-    counts = compute_label_counts(train_dataset)
-    class_weights = make_type_level_class_weights_balanced(
+    
+    entity_counts = TRAIN_ENTITY_COUNTS
+    
+    class_weights = make_entity_count_weights(
         label2id=label2id,
-        id2label=id2label,
-        train_dataset=train_dataset,
-        alpha=0.6,          # slightly higher than 0.5 to upweight BIBL and ORG more
+        entity_counts = entity_counts,
+        alpha=0.6,          
         o_weight=0.85,
         min_w=0.5,
-        max_w=3.0,
+        max_w=4.0,
     )
 
     print_weights(class_weights, id2label)
@@ -837,6 +711,7 @@ def main(
     print("Max weight:", float(class_weights.max()), "Min weight:", float(class_weights.min()))
 
     print(f"Loading tokenizer & model: {model_name}")
+    
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     config = AutoConfig.from_pretrained(
