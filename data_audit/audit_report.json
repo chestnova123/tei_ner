@@ -1,40 +1,40 @@
 {
   "grand_total": {
-    "ARTEFACT": 21370,
-    "CONCEPT": 20135,
-    "CULTURE": 1609,
-    "PERSON": 4164,
-    "PLACE": 3739,
-    "BIBL": 3557,
-    "ORG": 863
+    "ARTEFACT": 21480,
+    "CONCEPT": 20335,
+    "CULTURE": 1620,
+    "PERSON": 4205,
+    "PLACE": 3766,
+    "BIBL": 3593,
+    "ORG": 865
   },
   "per_split": {
     "train": {
-      "ARTEFACT": 11477,
-      "CONCEPT": 8763,
-      "CULTURE": 1112,
-      "PERSON": 2472,
-      "PLACE": 2342,
-      "BIBL": 2361,
-      "ORG": 598
-    },
-    "test": {
-      "CONCEPT": 4003,
-      "PERSON": 527,
-      "BIBL": 276,
-      "CULTURE": 182,
-      "ARTEFACT": 4334,
-      "PLACE": 600,
-      "ORG": 83
+      "ARTEFACT": 16140,
+      "CONCEPT": 16000,
+      "CULTURE": 1265,
+      "PERSON": 3163,
+      "PLACE": 3021,
+      "BIBL": 2330,
+      "ORG": 729
     },
     "dev": {
-      "CONCEPT": 7369,
-      "ARTEFACT": 5559,
-      "PLACE": 797,
-      "CULTURE": 315,
-      "BIBL": 920,
-      "PERSON": 1165,
-      "ORG": 182
+      "CONCEPT": 2145,
+      "ARTEFACT": 2715,
+      "PLACE": 396,
+      "CULTURE": 216,
+      "BIBL": 507,
+      "PERSON": 581,
+      "ORG": 97
+    },
+    "test": {
+      "CONCEPT": 2190,
+      "ARTEFACT": 2625,
+      "BIBL": 756,
+      "PLACE": 349,
+      "CULTURE": 139,
+      "PERSON": 461,
+      "ORG": 39
     }
   },
   "per_family": {
@@ -48,40 +48,48 @@
       "ORG": 323
     },
     "varia": {
-      "CONCEPT": 1146,
+      "CONCEPT": 1152,
       "PERSON": 320,
       "BIBL": 168,
       "CULTURE": 73,
-      "ARTEFACT": 1148,
-      "PLACE": 268,
+      "ARTEFACT": 1152,
+      "PLACE": 269,
       "ORG": 78
     },
     "textil1": {
-      "CONCEPT": 1743,
-      "ARTEFACT": 1319,
-      "PLACE": 257,
+      "CONCEPT": 1752,
+      "ARTEFACT": 1321,
+      "PLACE": 262,
       "CULTURE": 174,
-      "BIBL": 201,
-      "PERSON": 363,
+      "BIBL": 217,
+      "PERSON": 378,
       "ORG": 35
     },
     "textil2": {
-      "CONCEPT": 4431,
-      "PLACE": 886,
-      "ARTEFACT": 3327,
-      "CULTURE": 430,
-      "BIBL": 671,
-      "PERSON": 1125,
-      "ORG": 50
+      "CONCEPT": 4560,
+      "PLACE": 904,
+      "ARTEFACT": 3381,
+      "CULTURE": 440,
+      "BIBL": 690,
+      "PERSON": 1148,
+      "ORG": 52
     },
-    "stereo": {
-      "CONCEPT": 2857,
-      "ARTEFACT": 3186,
-      "CULTURE": 109,
-      "PLACE": 332,
-      "PERSON": 207,
-      "BIBL": 108,
+    "stereo1": {
+      "CONCEPT": 1200,
+      "ARTEFACT": 1076,
+      "BIBL": 49,
+      "PLACE": 168,
+      "CULTURE": 49,
+      "PERSON": 103,
       "ORG": 5
+    },
+    "stereo2": {
+      "CONCEPT": 1658,
+      "ARTEFACT": 2117,
+      "CULTURE": 60,
+      "PLACE": 166,
+      "PERSON": 107,
+      "BIBL": 59
     },
     "keramik": {
       "CONCEPT": 576,
@@ -97,27 +105,45 @@
       "ARTEFACT": 1461,
       "CONCEPT": 1877,
       "BIBL": 185,
-      "PLACE": 276,
+      "PLACE": 277,
       "ORG": 10,
       "CULTURE": 151
     },
-    "metal": {
-      "CONCEPT": 5233,
-      "BIBL": 429,
-      "ARTEFACT": 2860,
-      "PERSON": 599,
-      "CULTURE": 99,
-      "PLACE": 406,
-      "ORG": 85
+    "metal1": {
+      "CONCEPT": 2734,
+      "BIBL": 172,
+      "ARTEFACT": 1285,
+      "PERSON": 270,
+      "CULTURE": 41,
+      "PLACE": 154,
+      "ORG": 32
     },
-    "figure": {
-      "ARTEFACT": 1380,
-      "ORG": 62,
-      "PERSON": 203,
-      "BIBL": 290,
-      "CULTURE": 42,
-      "PLACE": 134,
-      "CONCEPT": 393
+    "metal2": {
+      "CULTURE": 59,
+      "PERSON": 329,
+      "ARTEFACT": 1604,
+      "PLACE": 252,
+      "BIBL": 258,
+      "ORG": 53,
+      "CONCEPT": 2554
+    },
+    "figure1": {
+      "ARTEFACT": 574,
+      "ORG": 31,
+      "PERSON": 21,
+      "BIBL": 55,
+      "CULTURE": 5,
+      "PLACE": 19,
+      "CONCEPT": 29
+    },
+    "figure2": {
+      "ARTEFACT": 820,
+      "CONCEPT": 364,
+      "PLACE": 115,
+      "ORG": 31,
+      "BIBL": 235,
+      "PERSON": 182,
+      "CULTURE": 37
     },
     "textil_ex": {
       "ARTEFACT": 1549,
@@ -129,8 +155,5 @@
       "ORG": 34
     }
   },
-  "unknown_rs_types": {
-    "¨place": 1,
-    "termm": 1
-  }
+  "unknown_rs_types": {}
 }
