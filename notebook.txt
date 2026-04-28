@@ -96,10 +96,15 @@ left overlapping chunking but only on the level of the paragraphs (this might be
 
 training
 fixed entity weighting to be based on entity count rather than token count
+results:
+eval_f1    eval_f1_ARTEFACT    eval_f1_BIBL    eval_f1_CONCEPT    eval_f1_CULTURE    eval_f1_ORG    eval_f1_PERSON    eval_f1_PLACE    eval_f1_macro
+0.48785624021996077    0.5195859549421555    0.2349570200573066    0.4011872372000989    0.748091603    0.48447205    0.5970425138632163    0.6773399014778324    0.5232394686119265
 
 28.04.26
-adjusted class weighting added label smoothing
+adjusted class weighting (alpha=0.3, o_weight=0, min_weight=0.8, max_weight=4) added label smoothing 0.1
 established that person -> bibl confusion is the result of annotation practice rather than genuine error
+removed any rs type person that were nested within rs type bibl in the dataset
+
 
 
 

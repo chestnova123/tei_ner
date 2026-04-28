@@ -66,7 +66,7 @@ id2label = {i: l for l, i in label2id.items()}
 TRAIN_ENTITY_COUNTS = {
     "ARTEFACT": 14961,
     "CONCEPT":  15255,
-    "PERSON":    2834,
+    "PERSON":    2833,
     "PLACE":     2862,
     "BIBL":      2021,
     "CULTURE":   1195,
@@ -266,8 +266,8 @@ def make_entity_count_weights(
     label2id,
     entity_counts,
     alpha=0.3,
-    o_weight=0,
-    min_w=0.8,
+    o_weight=0.4,
+    min_w=0.9,
     max_w=4.0,
 ):
     """
@@ -296,8 +296,8 @@ def make_entity_count_weights(
         if t and t in type_weight:
             weights[lab_id] = float(type_weight[t])
 
-    weights[label2id["O"]] = o_weight
     weights = torch.clamp(weights, min=min_w, max=max_w)
+    weights[label2id["O"]] = o_weight
     weights = weights / weights.mean()
     return weights
 
@@ -699,8 +699,8 @@ def main(
         label2id=label2id,
         entity_counts = entity_counts,
         alpha=0.3,          
-        o_weight=0,
-        min_w=0.8,
+        o_weight=0.4,
+        min_w=0.9,
         max_w=4.0,
     )
 
