@@ -97,6 +97,10 @@ left overlapping chunking but only on the level of the paragraphs (this might be
 training
 fixed entity weighting to be based on entity count rather than token count
 
+28.04.26
+adjusted class weighting added label smoothing
+established that person -> bibl confusion is the result of annotation practice rather than genuine error
+
 
 
 

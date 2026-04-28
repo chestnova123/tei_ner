@@ -265,9 +265,9 @@ def print_predicted_tag_counts(trainer, dataset, id2label, topk=30):
 def make_entity_count_weights(
     label2id,
     entity_counts,
-    alpha=0.6,
-    o_weight=0.85,
-    min_w=0.5,
+    alpha=0.3,
+    o_weight=0,
+    min_w=0.8,
     max_w=4.0,
 ):
     """
@@ -317,7 +317,7 @@ class WeightedTokenTrainer(Trainer):
     def __init__(
         self,
         class_weights=None,
-        label_smoothing=0.0,
+        label_smoothing=0.1,
         llrd=False,
         layer_decay=0.9,
         head_lr_mult=4.0,
@@ -698,9 +698,9 @@ def main(
     class_weights = make_entity_count_weights(
         label2id=label2id,
         entity_counts = entity_counts,
-        alpha=0.6,          
-        o_weight=0.85,
-        min_w=0.5,
+        alpha=0.3,          
+        o_weight=0,
+        min_w=0.8,
         max_w=4.0,
     )
 
@@ -774,7 +774,7 @@ def main(
         data_collator=data_collator,
         compute_metrics=compute_metrics,
         class_weights=class_weights,
-        label_smoothing=0.0,
+        label_smoothing=0.1,
         llrd=True,
         layer_decay=0.9,
         head_lr_mult=2.0,             # head LR = base_lr * 2.0; conservative for DAPT model
