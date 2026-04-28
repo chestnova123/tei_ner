@@ -104,6 +104,9 @@ eval_f1    eval_f1_ARTEFACT    eval_f1_BIBL    eval_f1_CONCEPT    eval_f1_CULTUR
 adjusted class weighting (alpha=0.3, o_weight=0, min_weight=0.8, max_weight=4) added label smoothing 0.1
 established that person -> bibl confusion is the result of annotation practice rather than genuine error
 removed any rs type person that were nested within rs type bibl in the dataset
+o-sink persists
+moved setting of o weight to before clamping
+
 
 
 

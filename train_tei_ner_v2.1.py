@@ -266,8 +266,8 @@ def make_entity_count_weights(
     label2id,
     entity_counts,
     alpha=0.3,
-    o_weight=0.4,
-    min_w=0.9,
+    o_weight=0.0,
+    min_w=0.8,
     max_w=4.0,
 ):
     """
@@ -699,8 +699,8 @@ def main(
         label2id=label2id,
         entity_counts = entity_counts,
         alpha=0.3,          
-        o_weight=0.4,
-        min_w=0.9,
+        o_weight=0,
+        min_w=0.8,
         max_w=4.0,
     )
 
