@@ -64,13 +64,13 @@ id2label = {i: l for l, i in label2id.items()}
 # Entity counts from split analysis
 
 TRAIN_ENTITY_COUNTS = {
-    "ARTEFACT": 21480,
-    "CONCEPT":  20335,
-    "PERSON":    4205,
-    "PLACE":     3766,
-    "BIBL":      3593,
-    "CULTURE":   1620,
-    "ORG":        865,
+    "ARTEFACT": 14961,
+    "CONCEPT":  15255,
+    "PERSON":    2834,
+    "PLACE":     2862,
+    "BIBL":      2021,
+    "CULTURE":   1195,
+    "ORG":        680,
 }
 
 
