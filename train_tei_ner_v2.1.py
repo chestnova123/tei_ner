@@ -12,18 +12,10 @@ from transformers import (
     EarlyStoppingCallback,
     AutoConfig,
 )
-from seqeval.metrics import (
-    precision_score,
-    recall_score,
-    f1_score,
-    classification_report,
-)
+from seqeval.metrics import classification_report
 from seqeval.scheme import IOB2
-import inspect
 import torch
-from torch.nn import CrossEntropyLoss
 from collections import Counter
-import math
 import torch.nn.functional as F
 import re
 from transformers import set_seed
@@ -274,7 +266,6 @@ def make_entity_count_weights(
     Weight by inverse entity frequency rather than token frequency.
     This correctly upweights short-but-rare types like BIBL.
     """
-    import numpy as np
 
     counts = np.array(list(entity_counts.values()), dtype=np.float64)
     median_c = float(np.median(counts))
@@ -674,6 +665,17 @@ def main(
     train_dataset = ds_dict["train"]
     eval_dataset = ds_dict["validation"]
     test_dataset = ds_dict.get("test", None)
+
+    # Filter train-only: remove chunks too short to provide useful context
+    # Do NOT filter dev or test — they must reflect real document structure
+    MIN_REAL_TOKENS = 36
+    train_before = len(train_dataset)
+    train_dataset = train_dataset.filter(
+        lambda ex: sum(ex["attention_mask"]) >= MIN_REAL_TOKENS
+    )
+    print(f"Train after short-chunk filter (>={MIN_REAL_TOKENS} tokens): "
+          f"{train_before} → {len(train_dataset)} "
+          f"(removed {train_before - len(train_dataset)})")
     
     def add_length_column(ds, input_key="input_ids"):
         return ds.map(lambda x: {"length": len(x[input_key])})
@@ -803,6 +805,10 @@ def main(
         "best_metric": getattr(trainer.state, "best_metric", None),
         "best_model_checkpoint": getattr(trainer.state, "best_model_checkpoint", None),
         "global_step": trainer.state.global_step,
+         "min_real_tokens": MIN_REAL_TOKENS,      
+        "label_smoothing": 0.1,                   
+        "alpha": 0.3,                         
+        "o_weight": 0.5,                     
     }
 
     append_metrics_to_csv(output_dir, "validation", val_metrics, run_info)

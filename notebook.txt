@@ -107,6 +107,10 @@ removed any rs type person that were nested within rs type bibl in the dataset
 o-sink persists
 moved setting of o weight to before clamping
 
+4.05.26
+control run:
+alpha 03, o_weight 0.5, min_weight 0.9, max_weight 4.0, O set before clamping, label smoothing 0.1, head_lr_mult 2.0, layer_decay 0.95, early stopping patience 5, epochs 10, bathc size 16, base lr 2e-5, weights decay 0.01, seed 42
+
 
 
 

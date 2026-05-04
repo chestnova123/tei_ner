@@ -3,6 +3,7 @@ import json
 import random
 from pathlib import Path
 from collections import defaultdict
+import numpy as np
 
 from lxml import etree
 from lxml.etree import XMLSyntaxError
@@ -11,7 +12,10 @@ from transformers import AutoTokenizer
 from datasets import Dataset, DatasetDict
 from collections import Counter
 
-# version 4.4.0
+# version 4.5.0
+#Changes from 4.4.0:
+#   - added pack examples
+#   - raised min content chars from 50 to 150
 # Changes from 4.0.0:
 #   - Extended to all seven entity types:
 #     ARTEFACT, CONCEPT, PERSON, PLACE, ORG, CULTURE, BIBL
@@ -40,7 +44,7 @@ DASH_SET = {"\u2013"}
 JOIN_SET = HYPH_SET | DASH_SET
 
 # Minimum characters in normalized text for a paragraph to be kept
-MIN_CONTENT_CHARS = 50
+MIN_CONTENT_CHARS = 150
 
 def _is_word_char(ch: str) -> bool:
     return ch.isalnum() or ch == "_"
@@ -99,8 +103,72 @@ CAP_LOG_TOKENS = Counter()
 
 
 # ============================================================
-# 2. XML utilities (unchanged from v3)
+# 2. XML utilities
 # ============================================================
+
+def pack_examples(examples: list[dict], max_tokens: int = 480) -> list[dict]:
+    """
+    Pack consecutive examples from the same doc_id into single chunks
+    up to max_tokens real tokens. Only packs within the same doc_id
+    to avoid mixing paragraphs from different document chains.
+
+    Metadata is taken from the first example in each packed group.
+    The packed input_ids/attention_mask/labels are concatenated from
+    all contributing examples (padding stripped before concatenation).
+    """
+    packed = []
+
+    buffer_ids     = []
+    buffer_mask    = []
+    buffer_labels  = []
+    buffer_meta    = None   # metadata from first example in buffer
+    buffer_doc     = None
+
+    def flush():
+        if not buffer_ids or buffer_meta is None:
+            return
+        pad_len = max_tokens - len(buffer_ids)
+        packed.append({
+            # Metadata from first contributing example
+            "text":           buffer_meta["text"],
+            "entities":       buffer_meta["entities"],
+            "family_id":      buffer_meta["family_id"],
+            "split":          buffer_meta["split"],
+            "doc_id":         buffer_meta["doc_id"],
+            "lp_index":       buffer_meta["lp_index"],
+            "chunk_index":    buffer_meta["chunk_index"],
+            "group_id":       buffer_meta["group_id"],
+            "is_joined":      buffer_meta["is_joined"],
+            "chunk_start":    buffer_meta["chunk_start"],
+            "chunk_end":      buffer_meta["chunk_end"],
+            # Packed token sequences
+            "input_ids":      buffer_ids    + [1]    * pad_len,
+            "attention_mask": buffer_mask   + [0]    * pad_len,
+            "labels":         buffer_labels + [-100] * pad_len,
+        })
+
+    for ex in examples:
+        real_len    = sum(ex["attention_mask"])
+        real_ids    = ex["input_ids"][:real_len]
+        real_mask   = ex["attention_mask"][:real_len]
+        real_labels = ex["labels"][:real_len]
+        doc_id      = ex["doc_id"]
+
+        # Flush and start new buffer if doc changes or would overflow
+        if buffer_doc != doc_id or len(buffer_ids) + real_len > max_tokens:
+            flush()
+            buffer_ids     = []
+            buffer_mask    = []
+            buffer_labels  = []
+            buffer_meta    = ex
+            buffer_doc     = doc_id
+
+        buffer_ids    += real_ids
+        buffer_mask   += real_mask
+        buffer_labels += real_labels
+
+    flush()
+    return packed
 
 def postprocess_hyphenation(text_chars, char_map):
     """
@@ -986,9 +1054,14 @@ def examples_to_dataset(examples: list[dict]) -> Dataset:
         "text":           [ex["text"]           for ex in examples],
         "entities":       [ex["entities"]       for ex in examples],
         "family_id":      [ex["family_id"]      for ex in examples],
+        "split":          [ex["split"]          for ex in examples],
         "doc_id":         [ex["doc_id"]         for ex in examples],
         "lp_index":       [ex["lp_index"]       for ex in examples],
+        "chunk_index":    [ex["chunk_index"]    for ex in examples],
         "group_id":       [ex["group_id"]       for ex in examples],
+        "is_joined":      [ex["is_joined"]      for ex in examples],
+        "chunk_start":    [ex["chunk_start"]    for ex in examples],
+        "chunk_end":      [ex["chunk_end"]      for ex in examples],
         "input_ids":      [ex["input_ids"]      for ex in examples],
         "attention_mask": [ex["attention_mask"] for ex in examples],
         "labels":         [ex["labels"]         for ex in examples],
@@ -1017,6 +1090,24 @@ def build_and_save_corpus(root_dir: str, csv_path: str, out_dir: str):
             "Split produced empty dev or test set. "
             "Check that your CSV assigns families to all three splits."
         )
+        
+    
+    # Pack short paragraphs into fuller chunks — train only
+    # Dev and test are NOT packed so they reflect real document structure
+    # Save pre-packing examples for reporting
+    train_ex_unpacked = train_ex[:]   # shallow copy before packing
+    
+    print("\nPacking train examples...")
+    train_before = len(train_ex)
+    train_ex_sorted = sorted(train_ex, key=lambda ex: (ex["doc_id"], ex["lp_index"], ex["chunk_index"]))
+    train_ex = pack_examples(train_ex_sorted, max_tokens=CHUNK_LEN)
+    print(f"  Train: {train_before} → {len(train_ex)} examples after packing")
+
+    # Report mean real tokens after packing
+    real_lens = [sum(ex["attention_mask"]) for ex in train_ex]
+    print(f"  Mean real tokens: {np.mean(real_lens):.0f}  "
+          f"Median: {np.median(real_lens):.0f}  "
+          f"Min: {np.min(real_lens)}  Max: {np.max(real_lens)}")
 
     write_jsonl(train_ex, out_dir / "train.jsonl")
     write_jsonl(dev_ex,   out_dir / "dev.jsonl")
@@ -1053,8 +1144,8 @@ def build_and_save_corpus(root_dir: str, csv_path: str, out_dir: str):
 
     # Entity distribution report
     entity_distribution_report(
-        {"train": train_ex, "dev": dev_ex, "test": test_ex},
-        out_dir,
+    {"train": train_ex_unpacked, "dev": dev_ex, "test": test_ex},
+    out_dir,
     )
 
 
@@ -1066,7 +1157,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Build TEI NER corpus with family-aware splitting (v4)."
+        description="Build TEI NER corpus with family-aware splitting (v4.5)."
     )
     parser.add_argument("root_dir", help="Root directory containing TEI XML files")
     parser.add_argument("csv_path", help="CSV file: filepath,family_id,split")
