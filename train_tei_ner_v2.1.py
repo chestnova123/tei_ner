@@ -296,8 +296,8 @@ def make_entity_count_weights(
         if t and t in type_weight:
             weights[lab_id] = float(type_weight[t])
 
-    weights = torch.clamp(weights, min=min_w, max=max_w)
     weights[label2id["O"]] = o_weight
+    weights = torch.clamp(weights, min=min_w, max=max_w)
     weights = weights / weights.mean()
     return weights
 
