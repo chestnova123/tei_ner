@@ -257,8 +257,8 @@ def print_predicted_tag_counts(trainer, dataset, id2label, topk=30):
 def make_entity_count_weights(
     label2id,
     entity_counts,
-    alpha=0.3,
-    o_weight=0.5,
+    alpha=0.35,
+    o_weight=0.4,
     min_w=0.9,
     max_w=4.0,
 ):
@@ -700,8 +700,8 @@ def main(
     class_weights = make_entity_count_weights(
         label2id=label2id,
         entity_counts = entity_counts,
-        alpha=0.3,          
-        o_weight=0.5,
+        alpha=0.35,          
+        o_weight=0.4,
         min_w=0.9,
         max_w=4.0,
     )
@@ -807,8 +807,8 @@ def main(
         "global_step": trainer.state.global_step,
          "min_real_tokens": MIN_REAL_TOKENS,      
         "label_smoothing": 0.1,                   
-        "alpha": 0.3,                         
-        "o_weight": 0.5,                     
+        "alpha": 0.35,                         
+        "o_weight": 0.4,                     
     }
 
     append_metrics_to_csv(output_dir, "validation", val_metrics, run_info)
