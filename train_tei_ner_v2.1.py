@@ -266,8 +266,8 @@ def make_entity_count_weights(
     label2id,
     entity_counts,
     alpha=0.3,
-    o_weight=0.0,
-    min_w=0.8,
+    o_weight=0.5,
+    min_w=0.9,
     max_w=4.0,
 ):
     """
@@ -319,8 +319,8 @@ class WeightedTokenTrainer(Trainer):
         class_weights=None,
         label_smoothing=0.1,
         llrd=False,
-        layer_decay=0.9,
-        head_lr_mult=4.0,
+        layer_decay=0.95,
+        head_lr_mult=2.0,
         *args,
         **kwargs,
     ):
@@ -484,8 +484,8 @@ def build_llrd_param_groups(
     model,
     base_lr: float,
     weight_decay: float,
-    layer_decay: float = 0.9,
-    head_lr_mult: float = 4.0,
+    layer_decay: float = 0.95,
+    head_lr_mult: float = 2.0,
 ):
     """
     Build AdamW param groups with layer-wise LR decay (LLRD).
@@ -699,8 +699,8 @@ def main(
         label2id=label2id,
         entity_counts = entity_counts,
         alpha=0.3,          
-        o_weight=0,
-        min_w=0.8,
+        o_weight=0.5,
+        min_w=0.9,
         max_w=4.0,
     )
 
@@ -776,7 +776,7 @@ def main(
         class_weights=class_weights,
         label_smoothing=0.1,
         llrd=True,
-        layer_decay=0.9,
+        layer_decay=0.95,
         head_lr_mult=2.0,             # head LR = base_lr * 2.0; conservative for DAPT model
         callbacks=[EarlyStoppingCallback(early_stopping_patience=5)],
     )
